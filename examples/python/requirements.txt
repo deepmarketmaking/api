@@ -1,0 +1,5 @@
+websocket-client
+boto3
+httpx
+tenacity
+pyarrow
