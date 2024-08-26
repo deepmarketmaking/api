@@ -5,6 +5,8 @@ import websockets
 import traceback
 from authenticate import authenticate_user
 from cusips_to_figis import openfigi_map_cusips_to_figis
+from fit_johnson_su import fit_johnson_su
+from scipy.stats import johnsonsu
 
 
 async def main():
@@ -24,6 +26,9 @@ async def main():
     msg = {
         'inference': [
             {
+                # !! NOTE: when we say gspread we actually mean spread. Eventually this
+                # will be fixed in the API, but at the moment what the API calls
+                # gspread is actually the spread.
                 'rfq_label': 'gspread',
                 'figi': cusip_to_figi['594918BJ2'],
                 'quantity': 1_000_000,
@@ -53,22 +58,9 @@ async def main():
         ]
     }
 
-    # Percentiles from 5 to 95 in steps of 5
-    percentiles = [f for f in range(5, 100, 5)]
-
-    # Index of 50th percentile:
-    percentile_50_index = percentiles.index(50)
-
-    # !! NOTE: when we say gspread we actually mean spread. Eventually this
-    # will be fixed in the API, but at the moment what the API calls
-    # gspread is actually the spread.
-    labels = ['price', 'gspread']
-
     while True:
         try:
             msg['token'] = authenticate_user(username, password)
-            # The equivalent of create_connection in the websocket library is the connect function
-            # ws = create_connection("wss://staging1.deepmm.com")
             ws = await websockets.connect("wss://staging1.deepmm.com")
             await ws.send(json.dumps(msg))
             while True:
@@ -77,25 +69,48 @@ async def main():
                 response_json = json.loads(response)
 
                 if 'message' in response_json and response_json['message'] == 'deactivated':
-                    await ws.close()
+                    ws.close()
                     break
 
-                # Filter each price list to keep only the 50th percentile value
+                # Fit a normal distribution to the percentiles
                 for item in response_json['inference']:
-                    for label in labels:
-                        if label in item:
-                            item[label] = item[label][percentile_50_index]
-                            item['cusip'] = figi_to_cusip[item['figi']]
+                    # Pretty print the JSON
+                    pretty_response = json.dumps(item, indent=4)
+                    print("Inference:", pretty_response)
 
-                # Pretty print the JSON
-                pretty_response = json.dumps(response_json, indent=4)
-                print("Pretty Printed Response:", pretty_response)
+                    # !! NOTE: when we say gspread we actually mean spread. Eventually this
+                    # will be fixed in the API, but at the moment what the API calls
+                    # gspread is actually the spread.
+                    if 'gspread' in item:
+                        percentile_values = item['gspread']
+                    elif 'price' in item:
+                        percentile_values = item['price']
+
+                    percentiles = [f for f in range(5, 100, 5)]
+                    print("Percentiles: ", percentiles)
+                    print("Percentile Values: ", percentile_values)
+
+                    # Fit a normal distribution to the percentiles, percentile values
+                    # and return the mean and standard deviation
+                    gamma, delta, loc, scale, best_fit_error = fit_johnson_su(percentiles, percentile_values)
+                    print("Gamma: ", gamma)
+                    print("Delta: ", delta)
+                    print("Scale: ", scale)
+                    print("Location: ", loc)
+                    print("Best Fit Error for normal distribution: ", best_fit_error)
+
+                    # Now we can show how to query the normal distribution for a given price and see what the probability is
+                    query_value = loc + 2 * scale
+                    print("Query Value: ", query_value)
+                    probability = johnsonsu.cdf(query_value, gamma, delta, loc=loc, scale=scale)
+                    print("Probability that price or spread is below the query value: ", probability)
+
                 await asyncio.sleep(1)
         except Exception as e:
             print("An error occurred:", str(e))
             print(response_json)
             traceback.print_exc()
-            await ws.close()
+            ws.close()
             print("Retrying in 30 seconds")
             asyncio.sleep(30)
 

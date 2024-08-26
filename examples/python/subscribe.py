@@ -6,7 +6,6 @@ import traceback
 from authenticate import authenticate_user
 from cusips_to_figis import openfigi_map_cusips_to_figis
 
-
 async def main():
     if len(argv) != 4:
         print('Usage: python api_client_timestamp_sample.py <Deep MM dev username> <password> <openfigi_api_key>')
@@ -29,8 +28,7 @@ async def main():
                 'quantity': 1_000_000,
                 'side': 'bid',
                 'ats_indicator': "N",
-                'timestamp': ['2023-11-01T15:10:07.661Z', '2023-11-02T15:10:07.661Z'],
-                'subscribe': False,
+                'subscribe': True,
             },
             {
                 'rfq_label': 'price',
@@ -38,8 +36,7 @@ async def main():
                 'quantity': 1_000_000,
                 'side': 'dealer',
                 'ats_indicator': "N",
-                'timestamp': ['2023-11-02T15:10:07.661Z', '2023-11-02T15:10:07.661Z'],
-                'subscribe': False,
+                'subscribe': True,
             },
             {
                 'rfq_label': 'gspread',
@@ -47,8 +44,7 @@ async def main():
                 'quantity': 1_000_000,
                 'side': 'offer',
                 'ats_indicator': "Y",
-                'timestamp': ['2023-11-02T15:10:07.661Z', '2023-11-02T15:10:07.661Z'],
-                'subscribe': False,
+                'subscribe': True,
             },
         ]
     }
@@ -67,8 +63,6 @@ async def main():
     while True:
         try:
             msg['token'] = authenticate_user(username, password)
-            # The equivalent of create_connection in the websocket library is the connect function
-            # ws = create_connection("wss://staging1.deepmm.com")
             ws = await websockets.connect("wss://staging1.deepmm.com")
             await ws.send(json.dumps(msg))
             while True:
