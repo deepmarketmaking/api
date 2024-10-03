@@ -26,10 +26,7 @@ async def main():
     msg = {
         'inference': [
             {
-                # !! NOTE: when we say gspread we actually mean spread. Eventually this
-                # will be fixed in the API, but at the moment what the API calls
-                # gspread is actually the spread.
-                'rfq_label': 'gspread',
+                'rfq_label': 'spread',
                 'figi': cusip_to_figi['594918BJ2'],
                 'quantity': 1_000_000,
                 'side': 'bid',
@@ -47,7 +44,7 @@ async def main():
                 'subscribe': False,
             },
             {
-                'rfq_label': 'gspread',
+                'rfq_label': 'spread',
                 'figi': cusip_to_figi['594918BJ2'],
                 'quantity': 1_000_000,
                 'side': 'offer',
@@ -78,11 +75,8 @@ async def main():
                     pretty_response = json.dumps(item, indent=4)
                     print("Inference:", pretty_response)
 
-                    # !! NOTE: when we say gspread we actually mean spread. Eventually this
-                    # will be fixed in the API, but at the moment what the API calls
-                    # gspread is actually the spread.
-                    if 'gspread' in item:
-                        percentile_values = item['gspread']
+                    if 'spread' in item:
+                        percentile_values = item['spread']
                     elif 'price' in item:
                         percentile_values = item['price']
 

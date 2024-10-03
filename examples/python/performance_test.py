@@ -21,7 +21,7 @@ async def main():
     print("Mapping of CUSIPs to FIGIs complete\nCalling Deep MM API with FIGIs")
 
     template = {
-                'rfq_label': 'gspread',
+                'rfq_label': 'spread',
                 'figi': cusip_to_figi['594918BJ2'],
                 'quantity': 1_000_000,
                 'side': 'bid',
@@ -32,21 +32,20 @@ async def main():
     while True:
         try:
             token = authenticate_user(username, password)
-            ws = await websockets.connect("ws://localhost:8855")
+            ws = await websockets.connect("wss://staging1.deepmm.com", max_size=10 ** 8, timeout=120)
 
+            # Iterate over 4,000 values to add to the quantity, adding each value to the message
+            inferences = []
+            for i in range(4_000):
+                template['quantity'] = 1_000_000 + i
+                inferences.append(template.copy())
 
-            for j in range(32):
-                # Iterate over 16,000 values to add to the quantity, adding each value to the message
-                inferences = []
-                for i in range(2_000):
-                    template['quantity'] = 1_000_000 + i + j*2_000
-                    inferences.append(template.copy())
+            msg = {
+                'token': token,
+                'inference': inferences
+            }
 
-                msg = {
-                    'token': token,
-                    'inference': inferences
-                }
-                await ws.send(json.dumps(msg))
+            await ws.send(json.dumps(msg))
             while True:
                 response = await ws.recv()
                 # Parse the response as JSON

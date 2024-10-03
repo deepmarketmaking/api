@@ -13,7 +13,7 @@ async def main():
 
     msg = {'inference': [
         {
-            'rfq_label': 'gspread', # Really means spread, not gspread. We will fix this label in a later release.
+            'rfq_label': 'spread',
             'figi': 'BBG003LZRTD5',
             'quantity': 1_000_000,
             'side': 'bid',
@@ -47,7 +47,7 @@ async def main():
         #             "figi": "BBG003LZRTD5",
         #             "quantity": 1000000,
         #             "side": "bid",
-        #             "gspread": [ # !! This is actually spread, NOT gspread -- due to a miscommunication, the field name is incorrectly called gspread. We will fix this label in a later release.
+        #             "spread": [
         #                 36.19638681411743, # 5th percentile
         #                 37.01240122318268, # 10th percentile
         #                 37.50055134296417, # 15th percentile

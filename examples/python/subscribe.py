@@ -23,7 +23,7 @@ async def main():
     msg = {
         'inference': [
             {
-                'rfq_label': 'gspread',
+                'rfq_label': 'spread',
                 'figi': cusip_to_figi['594918BJ2'],
                 'quantity': 1_000_000,
                 'side': 'bid',
@@ -39,7 +39,7 @@ async def main():
                 'subscribe': True,
             },
             {
-                'rfq_label': 'gspread',
+                'rfq_label': 'spread',
                 'figi': cusip_to_figi['594918BJ2'],
                 'quantity': 1_000_000,
                 'side': 'offer',
@@ -55,10 +55,7 @@ async def main():
     # Index of 50th percentile:
     percentile_50_index = percentiles.index(50)
 
-    # !! NOTE: when we say gspread we actually mean spread. Eventually this
-    # will be fixed in the API, but at the moment what the API calls
-    # gspread is actually the spread.
-    labels = ['price', 'gspread']
+    labels = ['price', 'spread']
 
     while True:
         try:

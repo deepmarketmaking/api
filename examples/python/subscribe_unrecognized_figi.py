@@ -19,7 +19,7 @@ async def main():
     msg = {
         'inference': [
             {
-                'rfq_label': 'gspread',
+                'rfq_label': 'spread',
                 'figi': 'BBG006F8RW84', # FIGI outside of our current universe
                 'quantity': 1_000_000,
                 'side': 'bid',
@@ -27,7 +27,7 @@ async def main():
                 'subscribe': True,
             },
             {
-                'rfq_label': 'gspread',
+                'rfq_label': 'spread',
                 'figi': 'BBG00KHV1HM5',  # FIGI outside of our current universe
                 'quantity': 1_000_000,
                 'side': 'bid',
@@ -35,7 +35,7 @@ async def main():
                 'subscribe': True,
             },
             {
-                'rfq_label': 'gspread',
+                'rfq_label': 'spread',
                 'figi': 'BBG00P35JY86',  # FIGI outside of our current universe
                 'quantity': 1_000_000,
                 'side': 'bid',
@@ -43,7 +43,7 @@ async def main():
                 'subscribe': True,
             },
             {
-                'rfq_label': 'gspread',
+                'rfq_label': 'spread',
                 'figi': 'BBG00P35JYN9',  # FIGI outside of our current universe
                 'quantity': 1_000_000,
                 'side': 'bid',
@@ -51,7 +51,7 @@ async def main():
                 'subscribe': True,
             },
             {
-                'rfq_label': 'gspread',
+                'rfq_label': 'spread',
                 'figi': 'BBG00P2S1QD7',  # FIGI outside of our current universe
                 'quantity': 1_000_000,
                 'side': 'bid',
@@ -72,7 +72,7 @@ async def main():
             })
         msg['inference'].append(
             {
-                'rfq_label': 'gspread',
+                'rfq_label': 'spread',
                 'figi': "BBG003LZRTD5",
                 'quantity': 1_000_000+i,
                 'side': 'offer',
