@@ -18,6 +18,29 @@ The output of the model currently is the inferred 5th through the 95th percentil
 - **[Normal Distribution](https://en.wikipedia.org/wiki/Normal_distribution)**: [examples/python/timestamp_normal.py](examples/python/timestamp_normal.py)
 - **[Johnson SU Distribution](https://en.wikipedia.org/wiki/Johnson%27s_SU-distribution)**: [examples/python/timestamp_johnson_su.py](examples/python/timestamp_johnson_su.py)
 
+## Getting Started
+To begin using the API, follow these steps:
+
+1. **Install Dependencies**: Install the necessary dependencies listed in requirements.txt by running:
+
+   ```bash
+   pip install -r requirements.txt
+   ```
+   The main libraries used are:
+
+   - `websockets`: For WebSocket communication.
+   - `httpx`: For HTTP requests to the FIGI webservice to translate your cusips to figis(optional, depending on your implementation).
+   - `tenacity`: For handling retries with resilience.
+   - `pyarrow`: For efficient data handling.
+
+2. **Authentication**
+
+   - `Deep MM Websocket Authentication`: You will need a currently active Deep MM username and password for API access. In the future we will be switching over to an authentication scheme more suited for APIs, but for now we use the same method as what is used for the web application, which is AWS cognito with a username and password. We have included example code in this repository on how to authenticate for access to the websocket.
+   - `OpenFIGI Authentication`: If you want to make use of the [OpenFIGI api](https://www.openfigi.com/api) to convert your list of CUSIPs over to FIGIs as shown in some of the examples in this repository, you will need [to register](https://www.openfigi.com/user/signup) (for free) and obtain an OpenFIGI API key for your organization.
+
+3. **API Endpoint**:
+   Use a WebSocket client to connect to our API server, currently at `https://staging1.deepmm.com`. We recommend the Python websockets library. See the examples in the repository for more details.
+   
 ## Known Issues
 
 - **Unrecognized FIGIs**: We currently have about 94% coverage in investment grade (IG), and a similar percentage in high yield (HY) bonds, so some of the FIGI values you may send to the API will trigger a message saying that there are unrecognized FIGIs, and will have a list of the FIGIs. The issue is that the API currently returns a list of numbers which are our internal ID numbers. We are working on rolling out a fix so that the unrecognized FIGIs are reported back
