@@ -1,3 +1,3 @@
 # api
-Example code for accessing Deep MM APIs.
+Example code for accessing Deep MM's API.
 
