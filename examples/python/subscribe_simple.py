@@ -8,8 +8,8 @@ from authenticate import authenticate_user
 
 
 async def main():
-    username = "Your Account E-Mail Address"
-    password = "Your Password"
+    username = "your Deep MM username"
+    password = "your Deep MM password"
 
     msg = {'inference': [
         {
@@ -18,9 +18,7 @@ async def main():
             'quantity': 1_000_000,
             'side': 'bid',
             'ats_indicator': "N",
-            'timestamp': ['2023-11-01T15:10:07.661Z'],
-            # You can supply as many timestamps as you want here to receive historical inferences
-            'subscribe': False,
+            'subscribe': True,
         },  # You can list as many inference requests as you want here (up to the throttling limits).
     ], 'token': authenticate_user(username, password)}
 
@@ -72,7 +70,6 @@ async def main():
         #         }
         #     ]
         # }
-        await asyncio.sleep(1)
 
 
 if __name__ == '__main__':
