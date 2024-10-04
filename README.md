@@ -43,7 +43,15 @@ To begin using the API, follow these steps:
 
 4. **Batching**:
    
-   It's important to not
+   When submitting requests to the websocket server for historical inferences, it's important to batch them into as large as possible messages (while staying under the throttling limits). Our server has much better throughput for historical inferences with large rather than small batches. If you run into websocket client message size limits, here's an example of how to set up the connection with greater limits in both size and timeout:
+
+   ```python
+   import websockets
+
+   ws = await websockets.connect("wss://staging1.deepmm.com", max_size=10 ** 8, timeout=120)
+   ```
+
+   It's also generally a good idea to submit subscription requests in larger batches, but it's not quite as important because the subscriptions for your connection are eventually consolidated into a single list automatically on the server side. 
 
 6. **Throttling**:
 
