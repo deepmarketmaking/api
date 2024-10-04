@@ -5,11 +5,11 @@
 Our (currently US Only) Corporate Credit AI pricing engine is able [to infer](https://www.cloudflare.com/learning/ai/inference-vs-training/#:~:text=In%20the%20field%20of%20artificial,examples%20of%20the%20desired%20result.) the probability distribution of hypothetical trades on the secondary market [conditioned on](https://en.wikipedia.org/wiki/Conditional_probability) properties of the trade knowable before the trade, and also conditioned on a trade occuring at the specified point in time:
 
 - **FIGI**: the bond identifier, with an easy lookup from the CUSIP)
-- **Label**: price, spread, ytm. What do you want the model to predict? (Generally price, spread, or yield to maturity (YTM), with plans for adding other labels in the future such as option-adjusted spread). 
+- **Label**: "price", "spread", or "ytm". What do you want the model to predict? (Generally price, spread, or yield to maturity (YTM), with plans for adding other labels in the future such as option-adjusted spread). 
 - **Quantity**: How big of a hypothetical trade is it? Valid values range from 1 to 5,000,000, the later being the maximum reported by the commercial TRACE feed (the academic historical data has the actual sizes, but we're not allowed to use it).
-- **Side**: bid, offer, dealer, as reported by trace (simplified from the two-field values reported by TRACE).
-- **ATS Indicator**: Y,N, default N. This indicates whether you want to assume the trade is happening on an alternative trading service. This field is optional.
-- **Timestamp**: List of strings in the ISO 8601 UTC timestamp format for which you want to get historical price, spread, or ytm probability distributions. Any timestamp greater than January 1st, 2019 is valid (as that is how far back we have historical data inputs for our AI model). This field is optional. Typically if you only want the current inference values, then you would not include this field.
+- **Side**: "bid", "offer", or "dealer", as reported by trace (simplified from the two-field values reported by TRACE).
+- **ATS Indicator**: "Y","N", default "N". This indicates whether you want to assume the trade is happening on an alternative trading service. This field is optional.
+- **Timestamp**: List of strings in the [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) UTC timestamp format (example '2023-11-01T15:10:07.661Z' -- the Z indicates that it is UTC. This timestamp example expresses November 1st, 2023 at 10:07.661 AM), for which you want to get historical price, spread, or ytm probability distributions. Any timestamp greater than January 1st, 2019 is valid (as that is how far back we have historical data inputs for our AI model). This field is optional. Typically if you only want the current inference values, then you would not include this field.
 
 You can also specify whether you want to subscribe to the inference. If you subscribe then you will receive updates at regular intervals while you maintain the websocket connection. 
 
@@ -70,9 +70,60 @@ To begin using the API, follow these steps:
    - 4,000,000
    - 5,000,000
 
-## Tutorial: Subscribing
+## Subscribing
 
-Suppose that I wanted to receive a regularly updating feed for a list of N bonds, and for each 
+Suppose that I wanted to receive a regularly updating feed for a bond with figi `BBG003LZRTD5`, then I could create a websocket request message like this (in python json format):
+
+```python
+    {'inference': [
+        {
+            'rfq_label': 'spread',
+            'figi': 'BBG003LZRTD5',
+            'quantity': 1_000_000,
+            'side': 'bid',
+            'ats_indicator': 'N',
+            'subscribe': True,
+        },  # You can list as many inference requests as you want here (up to the throttling limits).
+    ]}
+```
+This creates an inference request which will cause the server to send regular updates for the spread of this bond, conditioned on the trade for the bond being for 1,000,000 in size, the dealer is buying the bond, and is not being traded on an ATS. Notice there are a list of inferences. Let's say instead we wanted to get both sides of the market, and we also want to get the spread both when the trade is 1 MM as well as 100,000, then we just add some more subscription requests to the list:
+
+```python
+    {'inference': [
+        {
+            'rfq_label': 'spread',
+            'figi': 'BBG003LZRTD5',
+            'quantity': 1_000_000,
+            'side': 'bid',
+            'ats_indicator': 'N',
+            'subscribe': True,
+        },
+        {
+            'rfq_label': 'spread',
+            'figi': 'BBG003LZRTD5',
+            'quantity': 1_000_000,
+            'side': 'offer',
+            'ats_indicator': 'N',
+            'subscribe': True,
+        },
+        {
+            'rfq_label': 'spread',
+            'figi': 'BBG003LZRTD5',
+            'quantity': 100_000,
+            'side': 'bid',
+            'ats_indicator': 'N',
+            'subscribe': True,
+        },
+        {
+            'rfq_label': 'spread',
+            'figi': 'BBG003LZRTD5',
+            'quantity': 100_000,
+            'side': 'offer',
+            'ats_indicator': 'N',
+            'subscribe': True,
+        },
+    ]}
+```
 
 ## Known Issues
 
