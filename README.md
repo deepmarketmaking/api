@@ -49,16 +49,16 @@ To begin using the API, follow these steps:
 
    At the time of this writing each customer can subscribe to up 32,000 simultaneous subscriptions, or 32,000 historical timestamp requests within a 30-second window. We are working hard to increase this limit further, especially for users willing to use one of the standardized sizes (expressed here in python scalar format) (which allows us to infer once and send out to multiple users, thus decreasing the required inference load on our servers):
 
-   - 1_000
-   - 10_000
-   - 100_000
-   - 250_000
-   - 500_000
-   - 1_000_000
-   - 2_000_000
-   - 3_000_000
-   - 4_000_000
-   - 5_000_000
+   - 1,000
+   - 10,000
+   - 100,000
+   - 250,000
+   - 500,000
+   - 1,000,000
+   - 2,000,000
+   - 3,000,000
+   - 4,000,000
+   - 5,000,000
 
 ## Tutorial: Subscribing
 
