@@ -35,15 +35,19 @@ To begin using the API, follow these steps:
 
 2. **Authentication**
 
-   - `Deep MM Websocket Authentication`: You will need a currently active Deep MM username and password for API access. In the future we will be switching over to an authentication scheme more suited for APIs, but for now we use the same method as what is used for the web application, which is AWS cognito with a username and password. We have included example code in this repository on how to authenticate for access to the websocket.
+   - `Deep MM Websocket Authentication`:
+      - You will need a currently active Deep MM username and password for API access. In the future we will be switching over to an authentication scheme more suited for APIs, but for now we use the same method as what is used for the web application, which is AWS cognito with a username and password.
+      - We use the standard AWS client (called boto3 in python) to connect to cognito and obtain the IdToken that we have to send on the websocket connection once established.
+      - We have also included [example code in this repository](examples/python/authenticate.py) on how to authenticate and obtain the cognito IdToken used to authenticate once connecting to the WebSocket server
+      - Once you have the IdToken from cognito, you just send it to the Websocket server once the connection is established
+      - You can have up to five connections opened simultaneously, but in order to open more than one connection you must use the same cognito IdToken for all of them
+      - You can use a new IdToken to establish a new connection, but all previous connections for the same user will be disconnected
    - `OpenFIGI Authentication`: If you want to make use of the [OpenFIGI api](https://www.openfigi.com/api) to convert your list of CUSIPs over to FIGIs as shown in some of the examples in this repository, you will need [to register](https://www.openfigi.com/user/signup) (for free) and obtain an OpenFIGI API key for your organization.
 
 3. **API Endpoint**:
    Use a WebSocket client to connect to our API server, currently at `https://staging1.deepmm.com`. We recommend the Python websockets library. See the examples in the repository for more details.
 
-4. **Batching**:
-   
-   When submitting requests to the websocket server for historical inferences, it's important to batch them into as large as possible messages (while staying under the throttling limits). Our server has much better throughput for historical inferences with large rather than small batches. If you run into websocket client message size limits, here's an example of how to set up the connection with greater limits in both size and timeout:
+4. **Batching**: When submitting requests to the websocket server for historical inferences, it's important to batch them into as large as possible messages (while staying under the throttling limits). Our server has much better throughput for historical inferences with large rather than small batches. If you run into websocket client message size limits, here's an example of how to set up the connection with greater limits in both size and timeout:
 
    ```python
    import websockets
@@ -53,9 +57,7 @@ To begin using the API, follow these steps:
 
    It's also generally a good idea to submit subscription requests in larger batches, but it's not quite as important because the subscriptions for your connection are eventually consolidated into a single list automatically on the server side. 
 
-6. **Throttling**:
-
-   At the time of this writing each customer can subscribe to up 32,000 simultaneous subscriptions, or 32,000 historical timestamp requests within a 30-second window. We are working hard to increase this limit further, especially for users willing to use one of the standardized sizes (expressed here in python scalar format) (which allows us to infer once and send out to multiple users, thus decreasing the required inference load on our servers):
+6. **Throttling**: At the time of this writing each customer can subscribe to up 32,000 simultaneous subscriptions, or 32,000 historical timestamp requests within a 30-second window. We are working hard to increase this limit further, especially for users willing to use one of the standardized sizes (expressed here in python scalar format) (which allows us to infer once and send out to multiple users, thus decreasing the required inference load on our servers):
 
    - 1,000
    - 10,000
