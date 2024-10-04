@@ -40,7 +40,30 @@ To begin using the API, follow these steps:
 
 3. **API Endpoint**:
    Use a WebSocket client to connect to our API server, currently at `https://staging1.deepmm.com`. We recommend the Python websockets library. See the examples in the repository for more details.
+
+4. **Batching**:
    
+   It's important to not
+
+6. **Throttling**:
+
+   At the time of this writing each customer can subscribe to up 32,000 simultaneous subscriptions, or 32,000 historical timestamp requests within a 30-second window. We are working hard to increase this limit further, especially for users willing to use one of the standardized sizes (expressed here in python scalar format) (which allows us to infer once and send out to multiple users, thus decreasing the required inference load on our servers):
+
+   - 1_000
+   - 10_000
+   - 100_000
+   - 250_000
+   - 500_000
+   - 1_000_000
+   - 2_000_000
+   - 3_000_000
+   - 4_000_000
+   - 5_000_000
+
+## Tutorial: Subscribing
+
+Suppose that I wanted to receive a regularly updating feed for a list of N bonds, and for each 
+
 ## Known Issues
 
 - **Unrecognized FIGIs**: We currently have about 94% coverage in investment grade (IG), and a similar percentage in high yield (HY) bonds, so some of the FIGI values you may send to the API will trigger a message saying that there are unrecognized FIGIs, and will have a list of the FIGIs. The issue is that the API currently returns a list of numbers which are our internal ID numbers. We are working on rolling out a fix so that the unrecognized FIGIs are reported back
@@ -55,3 +78,13 @@ To begin using the API, follow these steps:
 Mostly for historical reasons as we were developing the backend infrastructure supporting the AI model's inference. Also there's a bit of frustration with the CUSIP system in that FactSet charges an exorbidant licensing fee to allow us to merely display the CUSIPs on our web application; it seems that [the industry is possibly moving towards this more open system](https://www.mayerbrown.com/en/insights/publications/2024/08/us-regulators-propose-data-standards-to-implement-the-financial-data-transparency-act). By using FIGIs, we are not required to check if someone has a CUSIP license before we allow them to try out the API, which can obviously increase the length of our sales cycle. 
 
 We do eventually plan to support CUSIPs in our API -- it's just that we have other current priorities that we're focused on -- such as seeking to increase the coverage of our universe to 100%.
+
+**Why do you only support inferences conditioned on sizes of up to 5,000,000?**
+
+We train our model to predict the label probability distribution as reported by the FINRA TRACE (BTDS and 144A) system. For high yield (HY) bonds of size over 1 MM, they are reported as "1MM+" by TRACE. For investment grade (IG) bonds of size over 5 MM, they are reported as size "5MM+". Therefore, the model has no training data over 5 MM on which to calibrate its weights. Therefore, the API does not permit any inference requests above 5 MM (or below 1), because otherwise the model would have undefined output above that range. There is some amount of generalization capability in that you could send an inference request between 1 MM and 5 MM for a HY bond, and you should get a reasonable result, even though TRACE doesn't have training data between 1 and 5 MM for HY bonds. This generalization capability comes about because we train the same model to work on both HY and IG bonds.
+
+**If your model is so good, why do you sell access to it as subscription rather than just starting your own bond trading / market making hedge fund**
+
+We feel that to build a product that will reach its full potential for value provided to users, it will have to be a cost shared by many firms. This is because this technology is pretty costly to research, develop, scale, and maintain. Our founder, Nathaniel Powell, built a corporate bond pricing model at JP Morgan, which at the time was the largest market maker in US corporate bonds, but still was stretched pretty thin, working on many different projects not corporate bond related. We estimate that we are expending more resources concentrated on corporate bond pricing than JP Morgan was, as a small startup. 
+
+Also -- the enterprise value of a successful enterprise SaaS AI software company is much greater than that of a small hedge fund or prop trading shop.
