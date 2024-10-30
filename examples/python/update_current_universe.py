@@ -95,10 +95,11 @@ async def get_inferences(figis, msg):
                 Bucket='deepmm.public',
                 Key='universe.txt',
                 Body=csv_buffer.getvalue(),
-                ContentType='text/txt'
+                ContentType='text/txt',
+                Tagging='public=true'
             )
 
-            print("Updated FIGIs successfully uploaded to S3 as universe.csv.")
+            print("Updated FIGIs successfully uploaded to S3 as universe.txt.")
 
             break
         
