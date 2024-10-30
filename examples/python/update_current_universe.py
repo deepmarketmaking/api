@@ -5,6 +5,8 @@ from sys import argv
 import websockets
 from authenticate import authenticate_user
 from datetime import datetime
+import csv
+import io
 
 # Initialize S3 client
 s3 = boto3.client('s3')
@@ -43,16 +45,13 @@ password = argv[2]
 
 # Now in in UTC timestamp format as shown below
 
-
-
-
 template = {
     'rfq_label': 'spread',
     'quantity': 1_000_000,
     'side': 'bid',
     'ats_indicator': "N",
     'subscribe': False,
-    'timestamp': ['2023-11-01T15:10:07.661Z']
+    'timestamp': [utc_now]
 }
 
 # Create a list of the above dictionary, one entry with the 'figi' key for each FIGI in the above list
@@ -77,12 +76,6 @@ async def get_inferences(figis, msg):
             # and then upload it to s3:
             # s3://deepmm.public/universe.txt
 
-            import csv
-            import io
-
-            # Now we need to create a new file which is just the new list of FIGIs
-            # and then upload it to s3:
-            # s3://deepmm.public/universe.txt
 
             # Create a CSV file in memory with the updated list of FIGIs
             csv_buffer = io.StringIO()
