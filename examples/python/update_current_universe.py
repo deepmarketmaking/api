@@ -1,12 +1,23 @@
-import boto3
 import asyncio
+import csv
+import datetime
+import io
 import json
 from sys import argv
+
+import boto3
 import websockets
-from authenticate import authenticate_user
-from datetime import datetime
-import csv
-import io
+
+from authentication import create_get_id_token
+
+if len(argv) != 5:
+    print('Usage: python update_current_universe.py <AWS Region> <Cognito Client ID> <Deep MM dev username> <password>')
+    exit()
+
+region = argv[1]
+client_id = argv[2]
+username = argv[3]
+password = argv[4]
 
 # Initialize S3 client
 s3 = boto3.client('s3')
@@ -30,18 +41,13 @@ except Exception as e:
 
 
 # Get the current UTC time with milliseconds
-utc_now = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+utc_now = datetime.datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 print(utc_now)
 
 # Now we will attempt to call the Deep MM API with the extracted FIGI values
 # And remove all figis from this list which are unrecognized by the API
 
-if len(argv) < 3:
-    print('Usage: python update_current_universe.py <Deep MM dev username> <password>')
-    exit()
-
-username = argv[1]
-password = argv[2]
+get_id_token = create_get_id_token(region, client_id, username, password)
 
 # Now in in UTC timestamp format as shown below
 
@@ -55,13 +61,17 @@ template = {
 }
 
 # Create a list of the above dictionary, one entry with the 'figi' key for each FIGI in the above list
-msg = {'inference': [dict(template, figi=figi) for figi in figis]}
+msg = {'token': get_id_token(), 'inference': [dict(template, figi=figi) for figi in figis]}
 
 async def get_inferences(figis, msg):
-    msg['token'] = authenticate_user(username, password)
-    ws = await websockets.connect("wss://staging1.deepmm.com")
+    # open a WebSocket connection to the server
+    ws = await websockets.connect("wss://staging1.deepmm.com",
+                                  max_size=10 ** 8,
+                                  open_timeout=None,
+                                  ping_timeout=None)
+    # send the message to the server
     await ws.send(json.dumps(msg))
-    for i in range(5):
+    for _ in range(5):
         response = await ws.recv()
         # Parse the response as JSON
         response_json = json.loads(response)
@@ -70,7 +80,9 @@ async def get_inferences(figis, msg):
             unrecognized_figis = response_json['unrecognized_figis']
 
             # Filter the unrecognized FIGIs from the list of FIGIs
-            figis = [figi for figi in figis if figi not in unrecognized_figis]
+            filtered_figis = [figi for figi in figis if figi not in unrecognized_figis]
+
+            print(f"{len(figis) = }, {len(unrecognized_figis) = }, {len(filtered_figis) = }")
 
             # Now we need to create a new file which is just the new list of FIGIs
             # and then upload it to s3:
@@ -80,7 +92,7 @@ async def get_inferences(figis, msg):
             # Create a CSV file in memory with the updated list of FIGIs
             csv_buffer = io.StringIO()
             csv_writer = csv.writer(csv_buffer, lineterminator='\n')
-            for figi in figis:
+            for figi in filtered_figis:
                 csv_writer.writerow([figi])
 
             # Upload the CSV file to S3
@@ -95,6 +107,9 @@ async def get_inferences(figis, msg):
             print("Updated FIGIs successfully uploaded to S3 as universe.txt.")
 
             break
+
+    # close the WebSocket
+    await ws.close()
         
 # Call get_inferences function and wait until complete
 asyncio.run(get_inferences(figis, msg))

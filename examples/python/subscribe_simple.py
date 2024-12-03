@@ -1,33 +1,52 @@
-# Bare minimum script to call the Deep MM API and write the response to the console
+# Bare minimum script to subscribe to the Deep MM API and write the responses to the console
 
 import asyncio
 import json
 from sys import argv
+import time
+
 import websockets
-from authenticate import authenticate_user
+
+from authentication import create_get_id_token
 
 
 async def main():
-    username = "your Deep MM username"
-    password = "your Deep MM password"
+    if len(argv) != 5:
+        print('Usage: python subscribe_simple.py <AWS Region> <Cognito Client ID> <Deep MM dev username> <password>')
+        exit()
 
-    msg = {'inference': [
-        {
-            'rfq_label': 'spread',
-            'figi': 'BBG003LZRTD5',
-            'quantity': 1_000_000,
-            'side': 'bid',
-            'ats_indicator': "N",
-            'subscribe': True,
-        },  # You can list as many inference requests as you want here (up to the throttling limits).
-    ], 'token': authenticate_user(username, password)}
+    region = argv[1]
+    client_id = argv[2]
+    username = argv[3]
+    password = argv[4]
+    get_id_token = create_get_id_token(region, client_id, username, password)
 
-    ws = await websockets.connect("wss://staging1.deepmm.com")
+    # create the subscription message
+    msg = {
+        'token': get_id_token(),
+        'inference': [
+            {
+                'rfq_label': 'spread',
+                'figi': 'BBG003LZRTD5',
+                'quantity': 1_000_000,
+                'side': 'bid',
+                'ats_indicator': "N",
+                'subscribe': True
+            },  # add additional inference requests here (up to the throttling limits)
+        ]
+    }
+    # open a WebSocket connection to the server
+    ws = await websockets.connect("wss://staging1.deepmm.com",
+                                  max_size=10 ** 8,
+                                  open_timeout=None,
+                                  ping_timeout=None)
+    # send the message to the server
     await ws.send(json.dumps(msg))
+    last_token_send_time = time.time()
 
-    # We loop receiving messages because this is a websocket connection, so responses
-    # come asynchronously on their own schedule and not necessarily all together.
+    # listen for messages from the server forever
     while True:
+        # wait for a response from the server
         response = await ws.recv()
         # Parse the response as JSON
         response_json = json.loads(response)
@@ -35,6 +54,12 @@ async def main():
         # Pretty print the JSON
         pretty_response = json.dumps(response_json, indent=4)
         print("Pretty Printed Response:", pretty_response)
+
+        # periodically send an updated token to the server so our session does not expire
+        # NOTE: the server does send a response to a message with only an updated token
+        if time.time() - last_token_send_time > 60:
+            await ws.send(json.dumps({ 'token': get_id_token() }))
+            last_token_send_time = time.time()
 
         # Sample Response:
         # {

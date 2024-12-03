@@ -9,7 +9,7 @@ Our (currently US Only) Corporate Credit AI pricing engine is able [to infer](ht
 - **Quantity**: How big of a hypothetical trade is it? Valid values range from 1 to 5,000,000, the later being the maximum reported by the commercial TRACE feed (the academic historical data has the actual sizes, but we're not allowed to use it).
 - **Side**: "bid", "offer", or "dealer", as reported by trace (simplified from the two-field values reported by TRACE).
 - **ATS Indicator**: "Y","N", default "N". This indicates whether you want to assume the trade is happening on an alternative trading service. This field is optional.
-- **Timestamp**: List of strings in the [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) UTC timestamp format (example '2023-11-01T15:10:07.661Z' -- the Z indicates that it is UTC. This timestamp example expresses November 1st, 2023 at 10:07.661 AM), for which you want to get historical price, spread, or ytm probability distributions. Any timestamp greater than January 1st, 2019 is valid (as that is how far back we have historical data inputs for our AI model). This field is optional. Typically if you only want the current inference values, then you would not include this field.
+- **Timestamp**: List of strings in the [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) UTC timestamp format (example '2023-11-01T15:10:07.661Z' -- the Z indicates that it is UTC. This timestamp example expresses November 1st, 2023 at 10:07.661 AM US/Eastern), for which you want to get historical price, spread, or ytm probability distributions. Any timestamp greater than January 1st, 2019 is valid (as that is how far back we have historical data inputs for our AI model). This field is optional. Typically if you only want the current inference values, then you would not include this field.
 
 You can also specify whether you want to subscribe to the inference. If you subscribe then you will receive updates at regular intervals while you maintain the websocket connection. 
 
@@ -38,7 +38,7 @@ To begin using the API, follow these steps:
    - `Deep MM Websocket Authentication`:
       - You will need a currently active Deep MM username and password for API access. In the future we will be switching over to an authentication scheme more suited for APIs, but for now we use the same method as what is used for the web application, which is AWS cognito with a username and password.
       - We use the standard AWS client (called boto3 in python) to connect to cognito and obtain the IdToken that we have to send on the websocket connection once established.
-      - We have also included [example code in this repository](examples/python/authenticate.py) on how to authenticate and obtain the cognito IdToken used to authenticate once connecting to the WebSocket server
+      - We have also included [example code in this repository](examples/python/authenticate.py) on how to authenticate and obtain the cognito IdToken used to authenticate once connected to the WebSocket server
       - Once you have the IdToken from cognito, you just send it to the Websocket server once the connection is established
       - You can have up to five connections opened simultaneously, but in order to open more than one connection you must use the same cognito IdToken for all of them
       - You can use a new IdToken to establish a new connection, but all previous connections for the same user will be disconnected
@@ -47,12 +47,15 @@ To begin using the API, follow these steps:
 3. **API Endpoint**:
    Use a WebSocket client to connect to our API server, currently at `https://staging1.deepmm.com`. We recommend the Python websockets library. See the examples in the repository for more details.
 
-4. **Batching**: When submitting requests to the websocket server for historical inferences, it's important to batch them into as large as possible messages (while staying under the throttling limits). Our server has much better throughput for historical inferences with large rather than small batches. If you run into websocket client message size limits, here's an example of how to set up the connection with greater limits in both size and timeout:
+4. **Batching**: When submitting requests to the websocket server for historical inferences, it's important to batch them into as large as possible messages (while staying under the throttling limits). Our server has much better throughput for historical inferences with large rather than small batches. If you run into websocket client message size limits, here's an example of how to set up the connection with larger limits:
 
    ```python
-   import websockets
+    import websockets
 
-   ws = await websockets.connect("wss://staging1.deepmm.com", max_size=10 ** 8, timeout=120)
+    ws = await websockets.connect("wss://staging1.deepmm.com",
+                                  max_size=10 ** 8,
+                                  open_timeout=None,
+                                  ping_timeout=None)
    ```
 
    It's also generally a good idea to submit subscription requests in larger batches, but it's not quite as important because the subscriptions for your connection are eventually consolidated into a single list automatically on the server side. 
