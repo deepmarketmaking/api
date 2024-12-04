@@ -12,6 +12,7 @@ from authentication import create_get_id_token
 
 if len(argv) != 5:
     print('Usage: python update_current_universe.py <AWS Region> <Cognito Client ID> <Deep MM dev username> <password>')
+    print('See README for additional details')
     exit()
 
 region = argv[1]

@@ -12,6 +12,7 @@ from authentication import create_get_id_token
 async def main():
     if len(argv) != 5:
         print('Usage: python timestamp_simple.py <AWS Region> <Cognito Client ID> <Deep MM dev username> <password>')
+        print('See README for additional details')
         exit()
 
     region = argv[1]

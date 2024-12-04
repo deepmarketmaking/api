@@ -11,6 +11,7 @@ async def main():
 
     if len(argv) != 5:
         print('Usage: python subscribe_unrecognized_figi.py <AWS Region> <Cognito Client ID> <Deep MM dev username> <password>')
+        print('See README for additional details')
         exit()
 
     region = argv[1]

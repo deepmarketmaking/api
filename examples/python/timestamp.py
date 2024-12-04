@@ -11,6 +11,7 @@ from cusips_to_figis import openfigi_map_cusips_to_figis
 async def main():
     if len(argv) != 6:
         print('Usage: python timestamp.py <AWS Region> <Cognito Client ID> <Deep MM dev username> <password> <openfigi_api_key>')
+        print('See README for additional details')
         exit()
 
     region = argv[1]

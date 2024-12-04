@@ -36,16 +36,22 @@ To begin using the API, follow these steps:
 2. **Authentication**
 
    - `Deep MM Websocket Authentication`:
-      - You will need a currently active Deep MM username and password for API access. In the future we will be switching over to an authentication scheme more suited for APIs, but for now we use the same method as what is used for the web application, which is AWS cognito with a username and password.
-      - We use the standard AWS client (called boto3 in python) to connect to cognito and obtain the IdToken that we have to send on the websocket connection once established.
-      - We have also included [example code in this repository](examples/python/authenticate.py) on how to authenticate and obtain the cognito IdToken used to authenticate once connected to the WebSocket server
-      - Once you have the IdToken from cognito, you just send it to the Websocket server once the connection is established
-      - You can have up to five connections opened simultaneously, but in order to open more than one connection you must use the same cognito IdToken for all of them
+      - You will need a currently active Deep MM username and password for API access
+      - We use the standard AWS client (called boto3 in python) to connect to Cognito and obtain the IdToken that we have to send on the WebSocket connection once established
+      - We have also included [example code in this repository](examples/python/authentication.py) on how to authenticate and obtain the Cognito IdToken used to authenticate once connected to the WebSocket server
+      - Once you have the IdToken from Cognito, you just send it to the Websocket server once the connection is established
+      - An updated token must be sent to the WebSocket server periodically in order to keep the session from expiring
+      - You can have up to five connections opened simultaneously, but in order to open more than one connection you must use the same Cognito IdToken for all of them
       - You can use a new IdToken to establish a new connection, but all previous connections for the same user will be disconnected
    - `OpenFIGI Authentication`: If you want to make use of the [OpenFIGI api](https://www.openfigi.com/api) to convert your list of CUSIPs over to FIGIs as shown in some of the examples in this repository, you will need [to register](https://www.openfigi.com/user/signup) (for free) and obtain an OpenFIGI API key for your organization.
 
-3. **API Endpoint**:
-   Use a WebSocket client to connect to our API server, currently at `https://staging1.deepmm.com`. We recommend the Python websockets library. See the examples in the repository for more details.
+3. **API Server Connection Settings**:
+   Use a WebSocket client to connect to the WebSocket Server. We recommend the Python websockets library. See the examples in the repository for more details.
+   - While testing use the following settings:
+      - WebSocket server: `wss://staging1.deepmm.com`
+      - AWS Region: `us-west-2`
+      - Cognito Client ID: `6k68k0irga6h8v6aknnta0q80u`
+   - Contact us for production settings and a dedicated Cognito Client ID
 
 4. **Batching**: When submitting requests to the websocket server for historical inferences, it's important to batch them into as large as possible messages (while staying under the throttling limits). Our server has much better throughput for historical inferences with large rather than small batches. If you run into websocket client message size limits, here's an example of how to set up the connection with larger limits:
 
