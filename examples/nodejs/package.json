@@ -1,0 +1,6 @@
+{
+  "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.726.0"
+  },
+  "type": "module"
+}
