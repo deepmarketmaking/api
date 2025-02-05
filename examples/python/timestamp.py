@@ -2,9 +2,8 @@ import asyncio
 import json
 from sys import argv
 
-import websockets
-
 from authentication import create_get_id_token
+from connection import connect
 from cusips_to_figis import openfigi_map_cusips_to_figis
 
 
@@ -69,10 +68,7 @@ async def main():
     labels = ['price', 'spread']
 
     # open a WebSocket connection to the server
-    ws = await websockets.connect("wss://staging1.deepmm.com",
-                                  max_size=10 ** 8,
-                                  open_timeout=None,
-                                  ping_timeout=None)
+    ws = await connect()
     # send the message to the server
     await ws.send(json.dumps(msg))
 

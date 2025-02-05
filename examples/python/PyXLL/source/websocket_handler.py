@@ -99,8 +99,8 @@ class WebSocketHandler:
             logging.error(f"Failed to send message: {e}")
 
     def configure_auth_token(self, email, password):
-        region = "us-west-2"
-        client_id = "6k68k0irga6h8v6aknnta0q80u"
+        region = "us-east-1"
+        client_id = "2so174j2e4fsg1m28kc9id3hgk"
         # use to hardcode configuration
         # email = ""
         # password = ""
@@ -172,7 +172,7 @@ class WebSocketHandler:
 
 
 # Initialize a global WebSocketHandler instance
-websocket_client = WebSocketHandler("wss://staging1.deepmm.com")
+websocket_client = WebSocketHandler("wss://deist.deepmm.com")
 
 
 def send_subscribe(subscribe_array):

@@ -1,4 +1,5 @@
 import { createGetIdToken } from "./authentication.js";
+import { connect } from "./connection.js";
 
 const args = process.argv.slice(2);
 if (args.length != 4) {
@@ -20,15 +21,13 @@ const msg = {
     ]
 }
 
-const ws = new WebSocket('wss://staging1.deepmm.com'); // Replace with your server URL
-
-ws.onopen = () => {
-    // get an id token, then send our message with the token
+const onopen = (ws) => {
     getIdToken().then(token => void ws.send(JSON.stringify({...msg, token})));
 };
 
-ws.onmessage = (event) => {
+const onmessage = (ws, event) => {
     console.log(JSON.stringify(JSON.parse(event['data']), null, 2));
-    // close the WebSocket when we have received all the data
     ws.close();
 };
+
+connect(onopen, onmessage);
