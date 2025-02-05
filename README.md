@@ -141,6 +141,10 @@ This creates an inference request which will cause the server to send regular up
 - **Portfolio trades not adjusted for**: We are planning a new version of the model which takes into account whether a trade is a portfolio trade or not. Right now our model is not able to see whether a trade is a portfolio trade or not, and so it's not able to learn to mostly ignore a portfolio trades price like you would expect.
 - **On the run rates roll-overs**: When there is a new on-the-run treasury, we immediately start using it as the benchmark rather than waiting the one week convention. We are working with our data provider to fix this issue. This affects the estimation of spread and ytm, as well as the accuracy in price space for bonds benchmarked to a treasury during this 1-week period.
 
+
+## PyXLL plugin 
+https://github.com/deepmarketmaking/pyxll
+
 ## FAQ
 
 **Why do you currently only support FIGI identifiers in the API?**
