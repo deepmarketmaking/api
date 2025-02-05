@@ -142,7 +142,7 @@ This creates an inference request which will cause the server to send regular up
 - **On the run rates roll-overs**: When there is a new on-the-run treasury, we immediately start using it as the benchmark rather than waiting the one week convention. We are working with our data provider to fix this issue. This affects the estimation of spread and ytm, as well as the accuracy in price space for bonds benchmarked to a treasury during this 1-week period.
 
 
-## PyXLL plugin 
+## PyXLL plugin for excel integration
 https://github.com/deepmarketmaking/pyxll
 
 ## FAQ
