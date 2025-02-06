@@ -46,19 +46,20 @@ To begin using the API, follow these steps:
    - `OpenFIGI Authentication`: If you want to make use of the [OpenFIGI api](https://www.openfigi.com/api) to convert your list of CUSIPs over to FIGIs as shown in some of the examples in this repository, you will need [to register](https://www.openfigi.com/user/signup) (for free) and obtain an OpenFIGI API key for your organization.
 
 3. **API Server Connection Settings**:
-   Use a WebSocket client to connect to the WebSocket Server. We recommend the Python websockets library. See the examples in the repository for more details.
-   - While testing use the following settings:
-      - WebSocket server: `wss://staging1.deepmm.com`
-      - AWS Region: `us-west-2`
-      - Cognito Client ID: `6k68k0irga6h8v6aknnta0q80u`
-   - Contact us for production settings and a dedicated Cognito Client ID
+   Use a WebSocket client to connect to the WebSocket Server. We recommend the Python `websockets` library. See the examples in the repository for more details.
+   - Use the following settings to connect:
+      - WebSocket servers: `wss://deist.deepmm.com`, `wss://hayek.deepmm.com`
+      - AWS Region: `us-east-1`
+      - Cognito Client ID:
+        - While testing use `2so174j2e4fsg1m28kc9id3hgk`
+        - For production deployments contact us for a dedicated Cognito Client ID
 
 4. **Batching**: When submitting requests to the websocket server for historical inferences, it's important to batch them into as large as possible messages (while staying under the throttling limits). Our server has much better throughput for historical inferences with large rather than small batches. If you run into websocket client message size limits, here's an example of how to set up the connection with larger limits:
 
    ```python
     import websockets
 
-    ws = await websockets.connect("wss://staging1.deepmm.com",
+    ws = await websockets.connect("wss://deist.deepmm.com",
                                   max_size=10 ** 8,
                                   open_timeout=None,
                                   ping_timeout=None)

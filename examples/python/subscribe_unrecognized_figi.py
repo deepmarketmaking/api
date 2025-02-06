@@ -3,9 +3,8 @@ import json
 from sys import argv
 import time
 
-import websockets
-
 from authentication import create_get_id_token
+from connection import connect
 
 async def main():
 
@@ -87,10 +86,7 @@ async def main():
             })
 
     # open a WebSocket connection to the server
-    ws = await websockets.connect("wss://staging1.deepmm.com",
-                                  max_size=10 ** 8,
-                                  open_timeout=None,
-                                  ping_timeout=None)
+    ws = await connect()
     # send the message to the server
     await ws.send(json.dumps(msg))
     last_token_send_time = time.time()

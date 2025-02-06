@@ -1,4 +1,5 @@
 import { createGetIdToken } from "./authentication.js";
+import { connect } from "./connection.js";
 
 const args = process.argv.slice(2);
 if (args.length != 4) {
@@ -20,9 +21,7 @@ const msg = {
     ]
 }
 
-const ws = new WebSocket('wss://staging1.deepmm.com'); // Replace with your server URL
-
-ws.onopen = () => {
+const onopen = (ws) => {
     // get an id token, then send our message with the token
     getIdToken().then(token => void ws.send(JSON.stringify({...msg, token})));
     // periodically send an updated token to the server so the session does not expire
@@ -30,6 +29,8 @@ ws.onopen = () => {
     setInterval(() => void getIdToken().then(token => void ws.send(JSON.stringify({ token }))), 60 * 1000)
 };
 
-ws.onmessage = (event) => {
+const onmessage = (ws, event) => {
     console.log(JSON.stringify(JSON.parse(event['data']), null, 2));
 };
+
+connect(onopen, onmessage);
