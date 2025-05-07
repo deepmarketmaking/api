@@ -1,7 +1,6 @@
 export const connect = (onopen, onmessage) => {
     // Create a WebSocket connection
-    const SERVER_LIST = ['wss://deist.deepmm.com', 'wss://hayek.deepmm.com'];
-    let serverIndex = Math.floor(Math.random() * SERVER_LIST.length);
+    const SERVER = 'wss://api.deepmm.com';
     let ws = null;
     let connectionTimeoutTimer = null;
     let openTimeout = 1;
@@ -9,10 +8,9 @@ export const connect = (onopen, onmessage) => {
         try {
             ws.close();
         } catch {}
-        console.log('Attempting connection to ' + SERVER_LIST[serverIndex]);
-        ws = new WebSocket(SERVER_LIST[serverIndex]);
+        console.log('Attempting connection to ' + SERVER);
+        ws = new WebSocket(SERVER);
         connectionTimeoutTimer = setTimeout(() => {
-            serverIndex = serverIndex == SERVER_LIST.length - 1 ? 0 : serverIndex + 1;
             openTimeout += 1;
             makeConnection();
         }, openTimeout * 1000);
@@ -21,7 +19,7 @@ export const connect = (onopen, onmessage) => {
                 clearTimeout(connectionTimeoutTimer);
                 connectionTimeoutTimer = null;
             }
-            console.log('Successful connection to ' + SERVER_LIST[serverIndex]);
+            console.log('Successful connection to ' + SERVER);
             onopen(ws);
         }
         ws.onmessage = (event) => {
