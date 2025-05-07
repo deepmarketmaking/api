@@ -52,7 +52,7 @@ To begin using the API, follow these steps:
 3. **API Server Connection Settings**:
    Use a WebSocket client to connect to the WebSocket Server. We recommend the Python `websockets` library. See the examples in the repository for more details.
    - Use the following settings to connect:
-      - WebSocket servers: `wss://deist.deepmm.com`, `wss://hayek.deepmm.com`
+      - WebSocket server: `wss://api.deepmm.com`
       - AWS Region: `us-east-1`
       - Cognito Client ID:
         - While testing use `2so174j2e4fsg1m28kc9id3hgk`
@@ -63,7 +63,7 @@ To begin using the API, follow these steps:
    ```python
     import websockets
 
-    ws = await websockets.connect("wss://deist.deepmm.com",
+    ws = await websockets.connect("wss://api.deepmm.com",
                                   max_size=10 ** 8,
                                   open_timeout=None,
                                   ping_timeout=None)
