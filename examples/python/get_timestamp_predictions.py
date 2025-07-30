@@ -163,6 +163,132 @@ def format_timestamp_for_api(timestamp: datetime) -> str:
     # Format as ISO string with Z suffix
     return utc_timestamp.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
 
+def test_combination_matching(csv_path: str):
+    """
+    Unit test function to debug combination matching issues
+    
+    Args:
+        csv_path: Path to the CSV file with existing results
+    """
+    print("\n===== COMBINATION MATCHING TEST =====")
+    
+    # Load existing results
+    try:
+        print(f"Loading results from {csv_path}")
+        results_df = pd.read_csv(csv_path)
+        print(f"Loaded {len(results_df)} results")
+        
+        # Print column names
+        print(f"CSV columns: {results_df.columns.tolist()}")
+        
+        # Check if required columns exist
+        required_cols = ['figi', 'side', 'ats_indicator']
+        date_cols = ['date', 'timestamp']  # Either one is acceptable
+        
+        missing_cols = [col for col in required_cols if col not in results_df.columns]
+        if missing_cols:
+            print(f"WARNING: Missing required columns: {missing_cols}")
+            return
+            
+        # Check if we have at least one date column
+        date_col = None
+        for col in date_cols:
+            if col in results_df.columns:
+                date_col = col
+                break
+                
+        if not date_col:
+            print(f"WARNING: Missing date column. Need one of: {date_cols}")
+            return
+        else:
+            print(f"Using '{date_col}' as the date column")
+        
+        # Print sample rows
+        print("\nSample rows from CSV:")
+        sample_rows = results_df.head(3).to_dict('records')
+        for i, row in enumerate(sample_rows):
+            print(f"Row {i+1}:")
+            for col, val in row.items():
+                print(f"  {col}: {val} (type: {type(val).__name__})")
+        
+        # Convert to records
+        all_results = results_df.to_dict('records')
+        
+        # Test our key generation logic
+        print("\nTesting key generation logic:")
+        processed_keys = set()
+        for result in all_results[:5]:  # Just test the first 5
+            if all(k in result for k in required_cols):
+                try:
+                    # Parse the timestamp to a datetime object
+                    if isinstance(result['timestamp'], str):
+                        dt = pd.to_datetime(result['timestamp'])
+                        print(f"Parsed timestamp '{result['timestamp']}' to {dt}")
+                    else:
+                        dt = result['timestamp']
+                        print(f"Timestamp is already a datetime: {dt}")
+                        
+                    # Extract date and time components
+                    date_str = dt.strftime('%Y-%m-%d')
+                    time_str = dt.strftime('%H:%M')
+                    
+                    # Create a key
+                    key = (result['figi'], date_str, time_str, result['side'], result['ats_indicator'])
+                    processed_keys.add(key)
+                    print(f"Generated key: {key}")
+                except Exception as e:
+                    print(f"Error generating key: {e}")
+        
+        # Now create a test combination that should match
+        print("\nTesting if we can create a matching combination:")
+        if sample_rows:
+            test_row = sample_rows[0]
+            try:
+                # Parse the date
+                dt = pd.to_datetime(test_row[date_col])
+                
+                # Create a combination tuple
+                test_combination = (
+                    test_row['figi'],
+                    dt,  # This is what we'd have in our all_combinations list
+                    test_row['side'],
+                    test_row['ats_indicator']
+                )
+                print(f"Test combination: {test_combination}")
+                
+                # Generate keys for this combination using our logic
+                date_str = dt.strftime('%Y-%m-%d')
+                
+                # Test both key formats
+                test_key_date_only = (test_combination[0], date_str, test_combination[2], test_combination[3])
+                print(f"Test key (date only): {test_key_date_only}")
+                
+                # Also test with standard times
+                for time_str in ['09:00', '16:00']:
+                    test_key_with_time = (test_combination[0], date_str, time_str, test_combination[2], test_combination[3])
+                    print(f"Test key (with time {time_str}): {test_key_with_time}")
+                    
+                    # Check if it matches
+                    if test_key_with_time in processed_keys:
+                        print(f"SUCCESS: Test key with time {time_str} found in processed_keys!")
+                
+                # Check if date-only key matches
+                if test_key_date_only in processed_keys:
+                    print("SUCCESS: Test key (date only) found in processed_keys!")
+                
+                # If no matches found
+                if test_key_date_only not in processed_keys and not any(test_key_with_time in processed_keys for time_str in ['09:00', '16:00']):
+                    print("FAILURE: No test keys found in processed_keys!")
+                    print("Keys in processed_keys:")
+                    for key in processed_keys:
+                        print(f"  {key}")
+            except Exception as e:
+                print(f"Error testing combination: {e}")
+    except Exception as e:
+        print(f"Error in test function: {e}")
+    
+    print("===== END OF TEST =====\n")
+
 def save_results(results: List[Dict], eval_year: str, rfq_label: str, append_mode: bool = False) -> str:
     """
     Save results to a CSV file and optionally upload to S3
@@ -861,36 +987,57 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
     if os.path.exists(local_path):
         try:
             print(f"Found existing results file: {local_path}")
+            
             results_df = pd.read_csv(local_path)
             all_results = results_df.to_dict('records')
             print(f"Loaded {len(all_results)} existing results")
             
             # Create a set of already processed combinations
             for result in all_results:
-                if all(k in result for k in ['figi', 'timestamp', 'side', 'ats_indicator']):
+                # Check for required fields - note that we accept either 'date' or 'timestamp'
+                date_field = None
+                if 'date' in result:
+                    date_field = 'date'
+                elif 'timestamp' in result:
+                    date_field = 'timestamp'
+                
+                if all(k in result for k in ['figi', 'side', 'ats_indicator']) and date_field is not None:
                     # Extract the components for the key
                     figi = result['figi']
                     side = result['side']
                     ats = result['ats_indicator']
                     
-                    # For timestamp, use a simpler approach that's less sensitive to format
+                    # Process the date field
                     try:
-                        # Parse the timestamp to a datetime object
-                        if isinstance(result['timestamp'], str):
-                            dt = pd.to_datetime(result['timestamp'])
+                        # Parse the date to a datetime object
+                        if isinstance(result[date_field], str):
+                            dt = pd.to_datetime(result[date_field])
                         else:
-                            dt = result['timestamp']
+                            dt = result[date_field]
                             
-                        # Extract just the date and hour/minute components
-                        # This is less sensitive to exact format and timezone issues
+                        # Extract just the date component
                         date_str = dt.strftime('%Y-%m-%d')
-                        time_str = dt.strftime('%H:%M')
                         
-                        # Create a key that's less sensitive to exact format
-                        key = (figi, date_str, time_str, side, ats)
-                        processed_keys.add(key)
+                        # Create a date-only key
+                        key_date_only = (figi, date_str, side, ats)
+                        processed_keys.add(key_date_only)
+                        
+                        # Also add keys with standard times (9 AM and 4 PM)
+                        for time_str in ['09:00', '16:00']:
+                            key_with_time = (figi, date_str, time_str, side, ats)
+                            processed_keys.add(key_with_time)
                     except Exception as e:
-                        print(f"Warning: Could not process timestamp '{result['timestamp']}': {e}")
+                        print(f"Warning: Could not process {date_field} '{result[date_field]}': {e}")
+                else:
+                    required_fields = ['figi', 'side', 'ats_indicator']
+                    if date_field is None:
+                        required_fields.append('date or timestamp')
+                    
+                    missing = [k for k in required_fields if k not in result and k != 'date or timestamp']
+                    if date_field is None:
+                        missing.append('date or timestamp')
+                        
+                    print(f"Warning: Result missing required fields: {missing}. Available fields: {list(result.keys())}")
             
             # Print some sample keys for debugging
             sample_keys = list(processed_keys)[:3] if processed_keys else []
@@ -904,20 +1051,31 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
     
     # Filter out combinations that have already been processed
     filtered_combinations = []
+    # Print a sample of all_combinations for debugging
+    if all_combinations:
+        print("\nSample of all_combinations:")
+        for i, combo in enumerate(all_combinations[:3]):
+            figi, ts, side, ats = combo
+            print(f"Combination {i+1}: figi={figi}, timestamp={ts}, side={side}, ats={ats}")
+    
     for figi, ts, side, ats in all_combinations:
-        # Extract the same date and time components as we did for the processed results
+        # Extract date component
         date_str = ts.strftime('%Y-%m-%d')
         time_str = ts.strftime('%H:%M')
         
-        # Create a key using the same format as for processed combinations
-        key = (figi, date_str, time_str, side, ats)
+        # Create both types of keys for matching
+        key_with_time = (figi, date_str, time_str, side, ats)
+        key_date_only = (figi, date_str, side, ats)
         
-        # Debug: Check if this key exists in processed_keys
-        if len(filtered_combinations) == 0 and key in processed_keys:
-            print(f"Debug: Found matching key: {key}")
+        # Debug: Check if either key exists in processed_keys
+        if len(filtered_combinations) == 0:
+            if key_with_time in processed_keys:
+                print(f"Debug: Found matching key with time: {key_with_time}")
+            elif key_date_only in processed_keys:
+                print(f"Debug: Found matching key without time: {key_date_only}")
         
-        # Only include if not already processed
-        if key not in processed_keys:
+        # Only include if not already processed (check both key formats)
+        if key_with_time not in processed_keys and key_date_only not in processed_keys:
             filtered_combinations.append((figi, ts, side, ats))
         else:
             # This combination has already been processed
