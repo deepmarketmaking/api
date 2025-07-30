@@ -26,6 +26,7 @@ import asyncio
 import boto3
 import pandas as pd
 import pytz
+import random
 from datetime import datetime, time as dt_time, timedelta, date
 from typing import List, Dict, Any, Optional, Set
 import websockets
@@ -43,16 +44,16 @@ TIMEOUT_SECONDS = 60
 BATCH_DELAY = 0.1
 
 # Retry configuration
-MAX_RETRIES = 3
-INITIAL_BACKOFF = 1.0  # Initial backoff delay in seconds
-BACKOFF_FACTOR = 2.0   # Multiply delay by this factor for each retry
+MAX_RETRIES = 5  # Increased from 3 to 5 for more persistent retries
+INITIAL_BACKOFF = 2.0  # Increased from 1.0 to 2.0 seconds
+BACKOFF_FACTOR = 2.5   # Increased from 2.0 to 2.5 for more aggressive backoff
 
 # Websocket ping interval in seconds
-PING_INTERVAL = 15  # Reduced from 30 to 15 seconds to prevent timeouts
+PING_INTERVAL = 10  # Reduced from 15 to 10 seconds to detect timeouts earlier
 
 # Reconnection configuration
-MAX_RECONNECT_ATTEMPTS = 5
-RECONNECT_BACKOFF = 2.0  # Initial backoff delay for reconnection in seconds
+MAX_RECONNECT_ATTEMPTS = 7  # Increased from 5 to 7 for more persistent reconnection
+RECONNECT_BACKOFF = 3.0  # Increased from 2.0 to 3.0 seconds for more time between reconnection attempts
 
 def load_universe() -> List[str]:
     """
@@ -220,6 +221,15 @@ class SharedState:
         self.retry_count = 0
         self.backoff_delay = INITIAL_BACKOFF
         
+        # Throttling state
+        self.throttling_count = 0
+        self.throttling_window_start = datetime.now()
+        self.throttling_window_size = 60  # seconds
+        self.throttling_threshold = 20  # throttling events in window before pausing
+        self.global_throttling = False
+        self.global_throttling_start = None
+        self.global_throttling_duration = 0  # seconds
+        
         # Connection state
         self.connection_active = True
         self.reconnect_count = 0
@@ -228,6 +238,10 @@ class SharedState:
         # Progress tracking
         self.processed_batch_indices = set()
         self.total_batches = 0
+        
+        # Performance tracking
+        self.successful_batches_count = 0
+        self.last_success_time = datetime.now()
 
     def start_retry(self, batch_index: int):
         """
@@ -240,6 +254,20 @@ class SharedState:
         self.retry_batch_index = batch_index
         self.retry_count += 1
         self.backoff_delay = INITIAL_BACKOFF * (BACKOFF_FACTOR ** (self.retry_count - 1))
+        
+        # Track throttling events for global throttling detection
+        self.throttling_count += 1
+        
+        # Check if we need to reset the throttling window
+        time_since_window_start = (datetime.now() - self.throttling_window_start).total_seconds()
+        if time_since_window_start > self.throttling_window_size:
+            # Reset the window
+            self.throttling_window_start = datetime.now()
+            self.throttling_count = 1
+        
+        # Check if we've exceeded the throttling threshold
+        if self.throttling_count >= self.throttling_threshold and not self.global_throttling:
+            self.start_global_throttling()
     
     def reset_retry(self):
         """
@@ -250,6 +278,43 @@ class SharedState:
         self.retry_count = 0
         self.backoff_delay = INITIAL_BACKOFF
     
+    def start_global_throttling(self):
+        """
+        Start global throttling pause
+        """
+        self.global_throttling = True
+        self.global_throttling_start = datetime.now()
+        # Start with 30 seconds, increase if needed
+        self.global_throttling_duration = 30
+        print(f"\n⚠️ GLOBAL THROTTLING: Pausing all requests for {self.global_throttling_duration} seconds due to excessive throttling")
+    
+    def check_global_throttling(self):
+        """
+        Check if global throttling should be ended
+        
+        Returns:
+            bool: True if still in global throttling, False if it's time to resume
+        """
+        if not self.global_throttling:
+            return False
+            
+        time_since_throttling_start = (datetime.now() - self.global_throttling_start).total_seconds()
+        if time_since_throttling_start >= self.global_throttling_duration:
+            self.end_global_throttling()
+            return False
+        
+        # Still throttling
+        return True
+    
+    def end_global_throttling(self):
+        """
+        End global throttling pause
+        """
+        self.global_throttling = False
+        self.throttling_count = 0
+        self.throttling_window_start = datetime.now()
+        print(f"\n✅ GLOBAL THROTTLING ENDED: Resuming requests after {self.global_throttling_duration} second pause")
+    
     def mark_batch_processed(self, batch_index: int):
         """
         Mark a batch as processed
@@ -258,6 +323,8 @@ class SharedState:
             batch_index: Index of the batch to mark as processed
         """
         self.processed_batch_indices.add(batch_index)
+        self.successful_batches_count += 1
+        self.last_success_time = datetime.now()
     
     def is_batch_processed(self, batch_index: int) -> bool:
         """
@@ -325,10 +392,10 @@ async def ping_websocket(ws, shared_state):
             await asyncio.sleep(2)  # Check more frequently
             
             # Check if we're missing pongs
-            if ping_count > pong_count + 3:
+            if ping_count > pong_count + 2:  # Reduced from 3 to 2 for earlier detection
                 print(f"WARNING: Missing pong responses (ping: {ping_count}, pong: {pong_count})")
                 # Force a reconnection if we're missing too many pongs
-                if ping_count > pong_count + 5:
+                if ping_count > pong_count + 3:  # Reduced from 5 to 3 for quicker reconnection
                     print("Too many missing pongs, forcing reconnection")
                     shared_state.connection_active = False
                     break
@@ -364,6 +431,14 @@ async def send_batches(ws, batches, batch_size, shared_state):
         return
     
     while i < total_batches and shared_state.connection_active:
+        # Check if we're in global throttling mode
+        if shared_state.global_throttling:
+            # Check if we should end global throttling
+            if shared_state.check_global_throttling():
+                # Still in global throttling, wait and check again
+                await asyncio.sleep(1)
+                continue
+        
         # Check if we're retrying a specific batch due to throttling
         if shared_state.throttling and shared_state.retry_batch_index is not None:
             # Get the batch to retry
@@ -373,8 +448,12 @@ async def send_batches(ws, batches, batch_size, shared_state):
             # Calculate backoff delay with exponential backoff
             backoff_delay = shared_state.backoff_delay
             
-            print(f"Throttling detected, retrying batch {retry_index+1}/{total_batches} (attempt {shared_state.retry_count}/{MAX_RETRIES}) after {backoff_delay:.2f}s delay")
-            await asyncio.sleep(backoff_delay)
+            # Add jitter to backoff delay (±20%) to prevent thundering herd problem
+            jitter = 0.8 + (0.4 * random.random())  # Random value between 0.8 and 1.2
+            adjusted_backoff = backoff_delay * jitter
+            
+            print(f"Throttling detected, retrying batch {retry_index+1}/{total_batches} (attempt {shared_state.retry_count}/{MAX_RETRIES}) after {adjusted_backoff:.2f}s delay")
+            await asyncio.sleep(adjusted_backoff)
             
             # Check if we've exceeded the maximum number of retries
             if shared_state.retry_count >= MAX_RETRIES:
@@ -409,8 +488,9 @@ async def send_batches(ws, batches, batch_size, shared_state):
             # Normal batch sending (not retrying)
             batch = batches[i]
             
-            # Normal delay between batches
-            await asyncio.sleep(BATCH_DELAY)
+            # Normal delay between batches with small jitter (±20%)
+            jitter = 0.8 + (0.4 * random.random())  # Random value between 0.8 and 1.2
+            await asyncio.sleep(BATCH_DELAY * jitter)
             
             # Prepare the request message
             msg = {'inference': batch}
@@ -529,6 +609,18 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state, all_results):
                         if not shared_state.throttling:  # Only start a new retry if we're not already retrying
                             shared_state.start_retry(shared_state.current_batch_index)
                             print(f"Server is throttling requests for batch {shared_state.current_batch_index+1}")
+                            
+                            # If we're getting a lot of throttling messages, increase the batch delay
+                            if shared_state.message_counts[message] > 50 and BATCH_DELAY < 0.5:
+                                global BATCH_DELAY
+                                BATCH_DELAY *= 1.5
+                                print(f"Increasing batch delay to {BATCH_DELAY:.2f}s due to frequent throttling")
+                            
+                            # If throttling is becoming excessive, consider extending global throttling
+                            if shared_state.global_throttling:
+                                # Extend the throttling duration
+                                shared_state.global_throttling_duration += 15
+                                print(f"Extended global throttling pause to {shared_state.global_throttling_duration} seconds")
                         else:
                             # Only print throttling messages occasionally
                             if shared_state.message_counts[message] <= 1 or shared_state.message_counts[message] % 10 == 0:
@@ -567,12 +659,21 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state, all_results):
                 if time_since_last_heartbeat >= heartbeat_interval:
                     # Check connection health
                     time_since_last_message = (datetime.now() - shared_state.last_message_time).total_seconds()
-                    if time_since_last_message > PING_INTERVAL * 3:
+                    if time_since_last_message > PING_INTERVAL * 2:  # Reduced from 3 to 2 for earlier detection
                         print(f"WARNING: No messages for {time_since_last_message:.1f} seconds, connection may be stale")
                         
                         # If it's been too long, force a reconnection
-                        if time_since_last_message > PING_INTERVAL * 5:
+                        if time_since_last_message > PING_INTERVAL * 3:  # Reduced from 5 to 3 for quicker reconnection
                             print("Connection appears stale, forcing reconnection")
+                            shared_state.connection_active = False
+                            break
+                    
+                    # Also check if we've had successful batches recently
+                    time_since_last_success = (datetime.now() - shared_state.last_success_time).total_seconds()
+                    if shared_state.successful_batches_count > 0 and time_since_last_success > PING_INTERVAL * 4:
+                        print(f"WARNING: No successful batches for {time_since_last_success:.1f} seconds, connection may be stale")
+                        if time_since_last_success > PING_INTERVAL * 6:
+                            print("No recent successful batches, forcing reconnection")
                             shared_state.connection_active = False
                             break
                     
@@ -732,14 +833,33 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
                 if next_batch is not None:
                     print(f"Reconnection progress: {processed_count}/{shared_state.total_batches} batches processed, {remaining_count} remaining")
                     print(f"Resuming from batch {next_batch+1}/{shared_state.total_batches}")
+                    
+                    # After reconnection, reset any global throttling
+                    if shared_state.global_throttling:
+                        shared_state.end_global_throttling()
+                    
+                    # After multiple reconnections, increase batch delay to reduce server load
+                    if reconnect_attempts > 2 and BATCH_DELAY < 0.5:
+                        global BATCH_DELAY
+                        BATCH_DELAY *= 1.2
+                        print(f"Increasing batch delay to {BATCH_DELAY:.2f}s after reconnection")
             
             print(f"Connecting to websocket server at {server_address} (attempt {reconnect_attempts+1}/{MAX_RECONNECT_ATTEMPTS+1})")
+            
+            # Add a small delay before connecting to avoid hammering the server
+            if reconnect_attempts > 0:
+                pre_connect_delay = 1.0 * reconnect_attempts
+                print(f"Waiting {pre_connect_delay:.1f}s before connecting...")
+                await asyncio.sleep(pre_connect_delay)
+                
             # Configure websocket with ping_interval and ping_timeout
             async with websockets.connect(
                 f"ws://{server_address}",
                 ping_interval=PING_INTERVAL,
                 ping_timeout=PING_INTERVAL*2,
-                close_timeout=10
+                close_timeout=15,  # Increased from 10 to 15
+                max_size=10 * 1024 * 1024,  # 10MB max message size
+                max_queue=2048  # Increase message queue size
             ) as ws:
                 print("Connected to websocket server")
                 
@@ -779,8 +899,10 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
             reconnect_attempts += 1
             
             if reconnect_attempts <= MAX_RECONNECT_ATTEMPTS:
-                # Calculate backoff delay with exponential backoff
-                reconnect_delay = RECONNECT_BACKOFF * (2 ** (reconnect_attempts - 1))
+                # Calculate backoff delay with exponential backoff and jitter
+                base_delay = RECONNECT_BACKOFF * (2 ** (reconnect_attempts - 1))
+                jitter = 0.8 + (0.4 * random.random())  # Random value between 0.8 and 1.2
+                reconnect_delay = base_delay * jitter
                 print(f"Reconnecting in {reconnect_delay:.2f} seconds...")
                 await asyncio.sleep(reconnect_delay)
             else:
@@ -807,14 +929,14 @@ def main():
                         help='Timeout in seconds after the last message before closing the connection (default: 120)')
     parser.add_argument('--batch-delay', type=float, default=0.2,
                         help='Delay in seconds between sending batches (default: 0.2)')
-    parser.add_argument('--max-retries', type=int, default=3,
-                        help='Maximum number of retries for throttled batches (default: 3)')
-    parser.add_argument('--backoff-factor', type=float, default=2.0,
-                        help='Exponential backoff factor for retries (default: 2.0)')
-    parser.add_argument('--ping-interval', type=int, default=15,
-                        help='Interval in seconds between websocket pings (default: 15)')
-    parser.add_argument('--max-reconnect', type=int, default=5,
-                        help='Maximum number of reconnection attempts (default: 5)')
+    parser.add_argument('--max-retries', type=int, default=5,
+                        help='Maximum number of retries for throttled batches (default: 5)')
+    parser.add_argument('--backoff-factor', type=float, default=2.5,
+                        help='Exponential backoff factor for retries (default: 2.5)')
+    parser.add_argument('--ping-interval', type=int, default=10,
+                        help='Interval in seconds between websocket pings (default: 10)')
+    parser.add_argument('--max-reconnect', type=int, default=7,
+                        help='Maximum number of reconnection attempts (default: 7)')
     
     args = parser.parse_args()
     
