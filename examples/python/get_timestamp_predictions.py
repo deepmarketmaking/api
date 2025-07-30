@@ -44,16 +44,18 @@ TIMEOUT_SECONDS = 60
 BATCH_DELAY = 0.1
 
 # Retry configuration
-MAX_RETRIES = 5  # Increased from 3 to 5 for more persistent retries
-INITIAL_BACKOFF = 2.0  # Increased from 1.0 to 2.0 seconds
-BACKOFF_FACTOR = 2.5   # Increased from 2.0 to 2.5 for more aggressive backoff
+MAX_RETRIES = 100  # Dramatically increased for extremely persistent retries
+INITIAL_BACKOFF = 2.0  # Initial backoff delay in seconds
+BACKOFF_FACTOR = 2.5   # Multiply delay by this factor for each retry
+MAX_BACKOFF = 40    # Maximum backoff delay in seconds (40 seconds)
 
 # Websocket ping interval in seconds
-PING_INTERVAL = 10  # Reduced from 15 to 10 seconds to detect timeouts earlier
+PING_INTERVAL = 8  # Further reduced to detect timeouts even earlier
 
 # Reconnection configuration
-MAX_RECONNECT_ATTEMPTS = 7  # Increased from 5 to 7 for more persistent reconnection
-RECONNECT_BACKOFF = 3.0  # Increased from 2.0 to 3.0 seconds for more time between reconnection attempts
+MAX_RECONNECT_ATTEMPTS = 20  # Dramatically increased for extremely persistent reconnection
+RECONNECT_BACKOFF = 3.0  # Initial backoff delay for reconnection in seconds
+MAX_RECONNECT_BACKOFF = 600.0  # Maximum reconnection backoff in seconds (10 minutes)
 
 def load_universe() -> List[str]:
     """
@@ -161,7 +163,7 @@ def format_timestamp_for_api(timestamp: datetime) -> str:
     # Format as ISO string with Z suffix
     return utc_timestamp.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
 
-def save_results(results: List[Dict], eval_year: str, rfq_label: str) -> str:
+def save_results(results: List[Dict], eval_year: str, rfq_label: str, append_mode: bool = False) -> str:
     """
     Save results to a CSV file and optionally upload to S3
     
@@ -169,6 +171,7 @@ def save_results(results: List[Dict], eval_year: str, rfq_label: str) -> str:
         results: List of result dictionaries
         eval_year: Year of evaluation
         rfq_label: RFQ label (price or spread)
+        append_mode: If True, append to existing file if it exists
         
     Returns:
         str: Path where results were saved
@@ -191,9 +194,46 @@ def save_results(results: List[Dict], eval_year: str, rfq_label: str) -> str:
     if sort_columns:
         results_df = results_df.sort_values(sort_columns)
     
-    # Save to CSV
-    results_df.to_csv(local_path, index=False)
-    print(f"Results saved to {local_path} ({len(results)} records)")
+    # Check if we should append to existing file
+    if append_mode and os.path.exists(local_path):
+        try:
+            # Read existing file to check for duplicates
+            existing_df = pd.read_csv(local_path)
+            
+            # Convert timestamp strings to datetime objects if present
+            if 'timestamp' in existing_df.columns and len(existing_df) > 0:
+                existing_df['timestamp'] = pd.to_datetime(existing_df['timestamp'])
+            
+            # Identify columns to use for duplicate detection
+            id_columns = [col for col in ['figi', 'timestamp', 'side', 'ats_indicator']
+                         if col in existing_df.columns and col in results_df.columns]
+            
+            if id_columns:
+                # Remove duplicates (keep new results if there are conflicts)
+                combined_df = pd.concat([existing_df, results_df])
+                combined_df = combined_df.drop_duplicates(subset=id_columns, keep='last')
+                
+                # Sort again
+                if sort_columns:
+                    combined_df = combined_df.sort_values(sort_columns)
+                
+                # Save combined results
+                combined_df.to_csv(local_path, index=False)
+                print(f"Results appended to {local_path} (now {len(combined_df)} records, added {len(results)} new records)")
+                results_df = combined_df  # Update results_df for S3 upload
+            else:
+                # If we can't identify duplicates, just append
+                results_df.to_csv(local_path, index=False)
+                print(f"Results saved to {local_path} ({len(results)} records)")
+        except Exception as e:
+            print(f"Error appending to existing file: {e}")
+            print("Saving as new file instead")
+            results_df.to_csv(local_path, index=False)
+            print(f"Results saved to {local_path} ({len(results)} records)")
+    else:
+        # Save to CSV as new file
+        results_df.to_csv(local_path, index=False)
+        print(f"Results saved to {local_path} ({len(results)} records)")
     
     # Try to upload to S3 if possible
     try:
@@ -225,7 +265,7 @@ class SharedState:
         self.throttling_count = 0
         self.throttling_window_start = datetime.now()
         self.throttling_window_size = 60  # seconds
-        self.throttling_threshold = 20  # throttling events in window before pausing
+        self.throttling_threshold = 10  # Reduced threshold for earlier intervention
         self.global_throttling = False
         self.global_throttling_start = None
         self.global_throttling_duration = 0  # seconds
@@ -284,8 +324,8 @@ class SharedState:
         """
         self.global_throttling = True
         self.global_throttling_start = datetime.now()
-        # Start with 30 seconds, increase if needed
-        self.global_throttling_duration = 30
+        # Start with 60 seconds, increase if needed
+        self.global_throttling_duration = 60
         print(f"\n⚠️ GLOBAL THROTTLING: Pausing all requests for {self.global_throttling_duration} seconds due to excessive throttling")
     
     def check_global_throttling(self):
@@ -450,7 +490,7 @@ async def send_batches(ws, batches, batch_size, shared_state):
             
             # Add jitter to backoff delay (±20%) to prevent thundering herd problem
             jitter = 0.8 + (0.4 * random.random())  # Random value between 0.8 and 1.2
-            adjusted_backoff = backoff_delay * jitter
+            adjusted_backoff = min(backoff_delay * jitter, MAX_BACKOFF)  # Cap at MAX_BACKOFF
             
             print(f"Throttling detected, retrying batch {retry_index+1}/{total_batches} (attempt {shared_state.retry_count}/{MAX_RETRIES}) after {adjusted_backoff:.2f}s delay")
             await asyncio.sleep(adjusted_backoff)
@@ -576,7 +616,7 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state, all_results):
                     # Save results periodically (not on every message to avoid excessive I/O)
                     time_since_last_save = (datetime.now() - last_save_time).total_seconds()
                     if time_since_last_save >= save_interval:
-                        save_results(all_results, eval_year, rfq_label)
+                        save_results(all_results, eval_year, rfq_label, append_mode=True)
                         last_save_time = datetime.now()
                     
                     # Update message counts
@@ -618,8 +658,8 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state, all_results):
                             
                             # If throttling is becoming excessive, consider extending global throttling
                             if shared_state.global_throttling:
-                                # Extend the throttling duration
-                                shared_state.global_throttling_duration += 15
+                                # Extend the throttling duration more aggressively
+                                shared_state.global_throttling_duration += 30
                                 print(f"Extended global throttling pause to {shared_state.global_throttling_duration} seconds")
                         else:
                             # Only print throttling messages occasionally
@@ -806,6 +846,7 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
     
     # Try to load existing results if available
     all_results = []
+    processed_keys = set()  # Track which combinations we've already processed
     filename = f"timestamp_predictions_{eval_year}_{rfq_label}.csv"
     local_path = os.path.join(os.getcwd(), filename)
     if os.path.exists(local_path):
@@ -814,9 +855,44 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
             results_df = pd.read_csv(local_path)
             all_results = results_df.to_dict('records')
             print(f"Loaded {len(all_results)} existing results")
+            
+            # Create a set of already processed combinations
+            for result in all_results:
+                if all(k in result for k in ['figi', 'timestamp', 'side', 'ats_indicator']):
+                    # Create a unique key for this combination
+                    key = (
+                        result['figi'],
+                        result['timestamp'],
+                        result['side'],
+                        result['ats_indicator']
+                    )
+                    processed_keys.add(key)
+            
+            print(f"Identified {len(processed_keys)} already processed combinations")
         except Exception as e:
             print(f"Error loading existing results: {e}")
             all_results = []
+            processed_keys = set()
+    
+    # Filter out combinations that have already been processed
+    filtered_combinations = []
+    for figi, ts, side, ats in all_combinations:
+        # Format timestamp for comparison
+        ts_str = format_timestamp_for_api(ts)
+        
+        # Create a key for this combination
+        key = (figi, ts_str, side, ats)
+        
+        # Only include if not already processed
+        if key not in processed_keys:
+            filtered_combinations.append((figi, ts, side, ats))
+    
+    # Report on filtering
+    skipped_count = len(all_combinations) - len(filtered_combinations)
+    if skipped_count > 0:
+        print(f"Skipping {skipped_count} already processed combinations")
+        print(f"Processing {len(filtered_combinations)} new combinations")
+        all_combinations = filtered_combinations
     
     # Reconnection loop
     reconnect_attempts = 0
@@ -902,7 +978,7 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
                 # Calculate backoff delay with exponential backoff and jitter
                 base_delay = RECONNECT_BACKOFF * (2 ** (reconnect_attempts - 1))
                 jitter = 0.8 + (0.4 * random.random())  # Random value between 0.8 and 1.2
-                reconnect_delay = base_delay * jitter
+                reconnect_delay = min(base_delay * jitter, MAX_RECONNECT_BACKOFF)  # Cap at MAX_RECONNECT_BACKOFF
                 print(f"Reconnecting in {reconnect_delay:.2f} seconds...")
                 await asyncio.sleep(reconnect_delay)
             else:
@@ -910,7 +986,7 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
     
     # Final save of results
     if all_results:
-        save_results(all_results, eval_year, rfq_label)
+        save_results(all_results, eval_year, rfq_label, append_mode=True)
         print(f"Final results saved: {len(all_results)} total results")
     else:
         print("No results to save - no inferences were successful")
@@ -929,14 +1005,14 @@ def main():
                         help='Timeout in seconds after the last message before closing the connection (default: 120)')
     parser.add_argument('--batch-delay', type=float, default=0.2,
                         help='Delay in seconds between sending batches (default: 0.2)')
-    parser.add_argument('--max-retries', type=int, default=5,
-                        help='Maximum number of retries for throttled batches (default: 5)')
+    parser.add_argument('--max-retries', type=int, default=100,
+                        help='Maximum number of retries for throttled batches (default: 100)')
     parser.add_argument('--backoff-factor', type=float, default=2.5,
                         help='Exponential backoff factor for retries (default: 2.5)')
-    parser.add_argument('--ping-interval', type=int, default=10,
-                        help='Interval in seconds between websocket pings (default: 10)')
-    parser.add_argument('--max-reconnect', type=int, default=7,
-                        help='Maximum number of reconnection attempts (default: 7)')
+    parser.add_argument('--ping-interval', type=int, default=8,
+                        help='Interval in seconds between websocket pings (default: 8)')
+    parser.add_argument('--max-reconnect', type=int, default=20,
+                        help='Maximum number of reconnection attempts (default: 20)')
     
     args = parser.parse_args()
     
