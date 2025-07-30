@@ -611,8 +611,8 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state, all_results):
                             print(f"Server is throttling requests for batch {shared_state.current_batch_index+1}")
                             
                             # If we're getting a lot of throttling messages, increase the batch delay
+                            global BATCH_DELAY
                             if shared_state.message_counts[message] > 50 and BATCH_DELAY < 0.5:
-                                global BATCH_DELAY
                                 BATCH_DELAY *= 1.5
                                 print(f"Increasing batch delay to {BATCH_DELAY:.2f}s due to frequent throttling")
                             
@@ -839,8 +839,8 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
                         shared_state.end_global_throttling()
                     
                     # After multiple reconnections, increase batch delay to reduce server load
+                    global BATCH_DELAY
                     if reconnect_attempts > 2 and BATCH_DELAY < 0.5:
-                        global BATCH_DELAY
                         BATCH_DELAY *= 1.2
                         print(f"Increasing batch delay to {BATCH_DELAY:.2f}s after reconnection")
             
