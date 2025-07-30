@@ -701,6 +701,7 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
     
     # Create shared state for communication between coroutines
     shared_state = SharedState()
+    shared_state.total_batches = len(batches)
     
     # Try to load existing results if available
     all_results = []
@@ -722,6 +723,15 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
         try:
             # Reset connection state
             shared_state.connection_active = True
+            
+            # Check progress after reconnection
+            if reconnect_attempts > 0:
+                processed_count = len(shared_state.processed_batch_indices)
+                remaining_count = shared_state.total_batches - processed_count
+                next_batch = shared_state.get_next_unprocessed_batch_index(0)
+                if next_batch is not None:
+                    print(f"Reconnection progress: {processed_count}/{shared_state.total_batches} batches processed, {remaining_count} remaining")
+                    print(f"Resuming from batch {next_batch+1}/{shared_state.total_batches}")
             
             print(f"Connecting to websocket server at {server_address} (attempt {reconnect_attempts+1}/{MAX_RECONNECT_ATTEMPTS+1})")
             # Configure websocket with ping_interval and ping_timeout
@@ -752,10 +762,18 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
         except Exception as e:
             print(f"Error with websocket connection: {e}")
             
-            # Save results before reconnecting
+            # Save results before reconnecting, but only if we have a significant number of new results
             if all_results:
-                save_results(all_results, eval_year, rfq_label)
-                print(f"Saved {len(all_results)} results before reconnecting")
+                # Check if we've saved recently
+                time_since_last_save = (datetime.now() - last_save_time).total_seconds() if 'last_save_time' in locals() else float('inf')
+                
+                # Only save if it's been a while or if this is the first reconnection
+                if reconnect_attempts == 1 or time_since_last_save > 30:
+                    save_results(all_results, eval_year, rfq_label)
+                    print(f"Saved {len(all_results)} results before reconnecting")
+                    last_save_time = datetime.now()
+                else:
+                    print(f"Skipping save before reconnection (saved {time_since_last_save:.1f} seconds ago)")
             
             # Increment reconnect attempts
             reconnect_attempts += 1
