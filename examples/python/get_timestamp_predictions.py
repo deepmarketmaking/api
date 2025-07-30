@@ -652,7 +652,7 @@ async def send_batches(ws, batches, batch_size, shared_state):
             except Exception as e:
                 print(f"Error sending retry batch {retry_index+1}: {e}")
                 shared_state.connection_active = False
-                break
+                # Don't break here, let the reconnection logic handle it
             
         else:
             # Skip already processed batches
@@ -683,7 +683,7 @@ async def send_batches(ws, batches, batch_size, shared_state):
             except Exception as e:
                 print(f"Error sending batch {i+1}: {e}")
                 shared_state.connection_active = False
-                break
+                # Don't break here, let the reconnection logic handle it
     
     if i >= total_batches:
         print(f"All {total_batches} batches sent")
@@ -841,7 +841,7 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state, all_results):
                         if time_since_last_message > PING_INTERVAL * 3:  # Reduced from 5 to 3 for quicker reconnection
                             print("Connection appears stale, forcing reconnection")
                             shared_state.connection_active = False
-                            break
+                            # Don't break here, let the reconnection logic handle it
                     
                     # Also check if we've had successful batches recently
                     time_since_last_success = (datetime.now() - shared_state.last_success_time).total_seconds()
@@ -850,7 +850,7 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state, all_results):
                         if time_since_last_success > PING_INTERVAL * 6:
                             print("No recent successful batches, forcing reconnection")
                             shared_state.connection_active = False
-                            break
+                            # Don't break here, let the reconnection logic handle it
                     
                     last_heartbeat_time = datetime.now()
                 
@@ -871,7 +871,7 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state, all_results):
         except Exception as e:
             print(f"Error receiving message: {e}")
             shared_state.connection_active = False
-            break
+            # Don't break here, let the reconnection logic handle it
     
     # Print final message counts
     print("\nFinal message counts:")
@@ -1149,14 +1149,22 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
                 sender = asyncio.create_task(send_batches(ws, batches, batch_size, shared_state))
                 receiver = asyncio.create_task(receive_messages(ws, eval_year, rfq_label, shared_state, all_results))
                 
-                # Wait for both coroutines to complete
-                await asyncio.gather(sender, receiver)
-                
-                # Cancel the ping task
-                ping_task.cancel()
-                
-                # If we got here without an exception, we're done
-                break
+                try:
+                    # Wait for both coroutines to complete
+                    await asyncio.gather(sender, receiver)
+                    
+                    # If we got here without an exception and all batches are processed, we're done
+                    if shared_state.get_next_unprocessed_batch_index(0) is None:
+                        print("All batches have been processed successfully")
+                        break
+                    else:
+                        # If there are still unprocessed batches, force a reconnection
+                        print("Not all batches were processed, forcing reconnection")
+                        shared_state.connection_active = False
+                        # Continue to the next iteration of the reconnection loop
+                finally:
+                    # Cancel the ping task
+                    ping_task.cancel()
         
         except Exception as e:
             print(f"Error with websocket connection: {e}")
@@ -1182,7 +1190,7 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
                 base_delay = RECONNECT_BACKOFF * (2 ** (reconnect_attempts - 1))
                 jitter = 0.8 + (0.4 * random.random())  # Random value between 0.8 and 1.2
                 reconnect_delay = min(base_delay * jitter, MAX_RECONNECT_BACKOFF)  # Cap at MAX_RECONNECT_BACKOFF
-                print(f"Reconnecting in {reconnect_delay:.2f} seconds...")
+                print(f"Reconnecting in {reconnect_delay:.2f} seconds (attempt {reconnect_attempts}/{MAX_RECONNECT_ATTEMPTS})...")
                 await asyncio.sleep(reconnect_delay)
             else:
                 print(f"Maximum reconnection attempts ({MAX_RECONNECT_ATTEMPTS}) exceeded")
