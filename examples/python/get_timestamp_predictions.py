@@ -48,7 +48,7 @@ INITIAL_BACKOFF = 1.0  # Initial backoff delay in seconds
 BACKOFF_FACTOR = 2.0   # Multiply delay by this factor for each retry
 
 # Websocket ping interval in seconds
-PING_INTERVAL = 30
+PING_INTERVAL = 15  # Reduced from 30 to 15 seconds to prevent timeouts
 
 # Reconnection configuration
 MAX_RECONNECT_ATTEMPTS = 5
@@ -294,22 +294,55 @@ async def ping_websocket(ws, shared_state):
         ws: Websocket connection
         shared_state: Shared state between coroutines
     """
+    ping_count = 0
+    pong_count = 0
+    
+    # Set up a pong waiter
+    pong_waiter = None
+    
+    # Register a pong handler
+    async def pong_handler(data):
+        nonlocal pong_count
+        pong_count += 1
+        print(f"Received pong response (ping: {ping_count}, pong: {pong_count})")
+        shared_state.last_message_time = datetime.now()  # Update last message time on pong
+    
+    # Register the pong handler
+    ws.pong_handlers.append(pong_handler)
+    
     while shared_state.connection_active:
         try:
             # Check if it's time to send a ping
             time_since_last_ping = (datetime.now() - shared_state.last_ping_time).total_seconds()
             if time_since_last_ping >= PING_INTERVAL:
                 # Send a ping
-                await ws.ping()
+                ping_count += 1
+                await ws.ping(f"ping-{ping_count}".encode())
                 shared_state.last_ping_time = datetime.now()
-                print(f"Sent websocket ping to keep connection alive")
+                print(f"Sent websocket ping #{ping_count} to keep connection alive")
             
-            # Wait a bit before checking again
-            await asyncio.sleep(5)
+            # Wait a bit before checking again, but not too long
+            await asyncio.sleep(2)  # Check more frequently
+            
+            # Check if we're missing pongs
+            if ping_count > pong_count + 3:
+                print(f"WARNING: Missing pong responses (ping: {ping_count}, pong: {pong_count})")
+                # Force a reconnection if we're missing too many pongs
+                if ping_count > pong_count + 5:
+                    print("Too many missing pongs, forcing reconnection")
+                    shared_state.connection_active = False
+                    break
+                
         except Exception as e:
-            print(f"Error sending ping: {e}")
-            # Don't break the loop, just try again later
-            await asyncio.sleep(5)
+            print(f"Error in ping task: {e}")
+            # Don't break the loop, just try again soon
+            await asyncio.sleep(2)
+    
+    # Clean up
+    if ws.pong_handlers and pong_handler in ws.pong_handlers:
+        ws.pong_handlers.remove(pong_handler)
+    
+    print("Ping task ending")
 
 async def send_batches(ws, batches, batch_size, shared_state):
     """
@@ -425,6 +458,10 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state, all_results):
     last_count_report_time = datetime.now()
     count_report_interval = 5  # Report counts every 5 seconds
     
+    # Heartbeat tracking
+    last_heartbeat_time = datetime.now()
+    heartbeat_interval = 5  # Check connection every 5 seconds
+    
     print(f"Starting to receive messages (will timeout after {TIMEOUT_SECONDS} seconds of inactivity)")
     
     # Flag to indicate if we're still expecting messages
@@ -524,7 +561,23 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state, all_results):
                     if sum(shared_state.message_counts.values()) > 10:
                         print(f"Message counts: {dict(shared_state.message_counts)}")
                     last_count_report_time = datetime.now()
+                
+                # Heartbeat check
+                time_since_last_heartbeat = (datetime.now() - last_heartbeat_time).total_seconds()
+                if time_since_last_heartbeat >= heartbeat_interval:
+                    # Check connection health
+                    time_since_last_message = (datetime.now() - shared_state.last_message_time).total_seconds()
+                    if time_since_last_message > PING_INTERVAL * 3:
+                        print(f"WARNING: No messages for {time_since_last_message:.1f} seconds, connection may be stale")
+                        
+                        # If it's been too long, force a reconnection
+                        if time_since_last_message > PING_INTERVAL * 5:
+                            print("Connection appears stale, forcing reconnection")
+                            shared_state.connection_active = False
+                            break
                     
+                    last_heartbeat_time = datetime.now()
+                
             else:
                 # If we timed out, check if it's been long enough since the last message
                 time_since_last = (datetime.now() - shared_state.last_message_time).total_seconds()
@@ -671,7 +724,13 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
             shared_state.connection_active = True
             
             print(f"Connecting to websocket server at {server_address} (attempt {reconnect_attempts+1}/{MAX_RECONNECT_ATTEMPTS+1})")
-            async with websockets.connect(f"ws://{server_address}") as ws:
+            # Configure websocket with ping_interval and ping_timeout
+            async with websockets.connect(
+                f"ws://{server_address}",
+                ping_interval=PING_INTERVAL,
+                ping_timeout=PING_INTERVAL*2,
+                close_timeout=10
+            ) as ws:
                 print("Connected to websocket server")
                 
                 # Start the ping task to keep the connection alive
@@ -726,16 +785,16 @@ def main():
     parser.add_argument('--rfq-label', choices=['price', 'spread'], default='spread',
                         help='RFQ label (price or spread, default: spread)')
     parser.add_argument('--test', action='store_true', help='Test mode: only evaluate on the most recent trading day')
-    parser.add_argument('--timeout', type=int, default=60,
-                        help='Timeout in seconds after the last message before closing the connection (default: 60)')
-    parser.add_argument('--batch-delay', type=float, default=0.1,
-                        help='Delay in seconds between sending batches (default: 0.1)')
+    parser.add_argument('--timeout', type=int, default=120,
+                        help='Timeout in seconds after the last message before closing the connection (default: 120)')
+    parser.add_argument('--batch-delay', type=float, default=0.2,
+                        help='Delay in seconds between sending batches (default: 0.2)')
     parser.add_argument('--max-retries', type=int, default=3,
                         help='Maximum number of retries for throttled batches (default: 3)')
     parser.add_argument('--backoff-factor', type=float, default=2.0,
                         help='Exponential backoff factor for retries (default: 2.0)')
-    parser.add_argument('--ping-interval', type=int, default=30,
-                        help='Interval in seconds between websocket pings (default: 30)')
+    parser.add_argument('--ping-interval', type=int, default=15,
+                        help='Interval in seconds between websocket pings (default: 15)')
     parser.add_argument('--max-reconnect', type=int, default=5,
                         help='Maximum number of reconnection attempts (default: 5)')
     
