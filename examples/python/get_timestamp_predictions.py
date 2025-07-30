@@ -309,31 +309,32 @@ def save_results(results: List[Dict], eval_year: str, rfq_label: str, append_mod
     local_path = os.path.join(os.getcwd(), filename)
     
     # Convert to DataFrame
-    results_df = pd.DataFrame(results)
+    new_results_df = pd.DataFrame(results)
     
     # Convert timestamp strings to datetime objects if present
-    if 'timestamp' in results_df.columns and len(results_df) > 0:
+    if 'timestamp' in new_results_df.columns and len(new_results_df) > 0:
         # Store original timestamps for debugging
-        original_timestamps = results_df['timestamp'].iloc[:5].tolist() if len(results_df) >= 5 else results_df['timestamp'].tolist()
+        original_timestamps = new_results_df['timestamp'].iloc[:5].tolist() if len(new_results_df) >= 5 else new_results_df['timestamp'].tolist()
         
         # Convert to datetime
-        results_df['timestamp'] = pd.to_datetime(results_df['timestamp'])
+        new_results_df['timestamp'] = pd.to_datetime(new_results_df['timestamp'])
         
         # Print sample of original and converted timestamps for debugging
-        converted_timestamps = results_df['timestamp'].iloc[:5].tolist() if len(results_df) >= 5 else results_df['timestamp'].tolist()
+        converted_timestamps = new_results_df['timestamp'].iloc[:5].tolist() if len(new_results_df) >= 5 else new_results_df['timestamp'].tolist()
         print(f"Sample original timestamps: {original_timestamps}")
         print(f"Sample converted timestamps: {converted_timestamps}")
     
     # Sort by timestamp, figi, side, and ats_indicator if present
-    sort_columns = [col for col in ['timestamp', 'figi', 'side', 'ats_indicator'] if col in results_df.columns]
+    sort_columns = [col for col in ['timestamp', 'figi', 'side', 'ats_indicator'] if col in new_results_df.columns]
     if sort_columns:
-        results_df = results_df.sort_values(sort_columns)
+        new_results_df = new_results_df.sort_values(sort_columns)
     
     # Check if we should append to existing file
     if append_mode and os.path.exists(local_path):
         try:
-            # Read existing file to check for duplicates
+            # Read existing file
             existing_df = pd.read_csv(local_path)
+            existing_count = len(existing_df)
             
             # Convert timestamp strings to datetime objects if present
             if 'timestamp' in existing_df.columns and len(existing_df) > 0:
@@ -341,34 +342,51 @@ def save_results(results: List[Dict], eval_year: str, rfq_label: str, append_mod
             
             # Identify columns to use for duplicate detection
             id_columns = [col for col in ['figi', 'timestamp', 'side', 'ats_indicator']
-                         if col in existing_df.columns and col in results_df.columns]
+                         if col in existing_df.columns and col in new_results_df.columns]
             
             if id_columns:
-                # Remove duplicates (keep new results if there are conflicts)
-                combined_df = pd.concat([existing_df, results_df])
-                combined_df = combined_df.drop_duplicates(subset=id_columns, keep='last')
+                # Filter out rows that already exist in the existing file
+                # Create a set of tuples representing the existing combinations
+                existing_keys = set()
+                for _, row in existing_df.iterrows():
+                    key_values = tuple(row[col] for col in id_columns)
+                    existing_keys.add(key_values)
                 
-                # Sort again
-                if sort_columns:
-                    combined_df = combined_df.sort_values(sort_columns)
+                # Filter out rows that already exist
+                new_rows = []
+                for _, row in new_results_df.iterrows():
+                    key_values = tuple(row[col] for col in id_columns)
+                    if key_values not in existing_keys:
+                        new_rows.append(row)
                 
-                # Save combined results
-                combined_df.to_csv(local_path, index=False)
-                print(f"Results appended to {local_path} (now {len(combined_df)} records, added {len(results)} new records)")
-                results_df = combined_df  # Update results_df for S3 upload
+                # Create a DataFrame with only the new rows
+                unique_new_df = pd.DataFrame(new_rows)
+                
+                if len(unique_new_df) > 0:
+                    # Append only the new rows to the existing file
+                    unique_new_df.to_csv(local_path, mode='a', header=False, index=False)
+                    print(f"Results appended to {local_path} (now {existing_count + len(unique_new_df)} records, added {len(unique_new_df)} new records)")
+                else:
+                    print(f"No new records to append to {local_path} (still {existing_count} records)")
+                
+                # For S3 upload, we need the complete file
+                results_df = pd.concat([existing_df, unique_new_df])
             else:
-                # If we can't identify duplicates, just append
-                results_df.to_csv(local_path, index=False)
-                print(f"Results saved to {local_path} ({len(results)} records)")
+                # If we can't identify duplicates, just append all new results
+                new_results_df.to_csv(local_path, mode='a', header=False, index=False)
+                print(f"Results appended to {local_path} (now {existing_count + len(new_results_df)} records, added {len(new_results_df)} new records)")
+                results_df = pd.concat([existing_df, new_results_df])
         except Exception as e:
             print(f"Error appending to existing file: {e}")
             print("Saving as new file instead")
-            results_df.to_csv(local_path, index=False)
-            print(f"Results saved to {local_path} ({len(results)} records)")
+            new_results_df.to_csv(local_path, index=False)
+            print(f"Results saved to {local_path} ({len(new_results_df)} records)")
+            results_df = new_results_df
     else:
         # Save to CSV as new file
-        results_df.to_csv(local_path, index=False)
-        print(f"Results saved to {local_path} ({len(results)} records)")
+        new_results_df.to_csv(local_path, index=False)
+        print(f"Results saved to {local_path} ({len(new_results_df)} records)")
+        results_df = new_results_df
     
     # Try to upload to S3 if possible
     try:
@@ -459,8 +477,8 @@ class SharedState:
         """
         self.global_throttling = True
         self.global_throttling_start = datetime.now()
-        # Start with 60 seconds, increase if needed
-        self.global_throttling_duration = 60
+        # Start with 30 seconds to be less aggressive initially
+        self.global_throttling_duration = 30
         print(f"\n⚠️ GLOBAL THROTTLING: Pausing all requests for {self.global_throttling_duration} seconds due to excessive throttling")
     
     def check_global_throttling(self):
@@ -609,7 +627,8 @@ async def send_batches(ws, batches, batch_size, shared_state):
         # Check if we're in global throttling mode
         if shared_state.global_throttling:
             # Check if we should end global throttling
-            if shared_state.check_global_throttling():
+            still_throttling = shared_state.check_global_throttling()
+            if still_throttling:
                 # Still in global throttling, wait and check again
                 await asyncio.sleep(1)
                 continue
@@ -717,6 +736,13 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state, all_results):
     last_heartbeat_time = datetime.now()
     heartbeat_interval = 5  # Check connection every 5 seconds
     
+    # Keep track of new results since last save
+    new_results_since_last_save = []
+    
+    # Remember the initial count of results loaded from file
+    initial_results_count = len(all_results)
+    print(f"Starting with {initial_results_count} existing results loaded from file")
+    
     print(f"Starting to receive messages (will timeout after {TIMEOUT_SECONDS} seconds of inactivity)")
     
     # Flag to indicate if we're still expecting messages
@@ -727,7 +753,7 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state, all_results):
             # Wait for a message with a timeout
             message_task = asyncio.create_task(ws.recv())
             done, pending = await asyncio.wait(
-                [message_task], 
+                [message_task],
                 timeout=1.0  # Short timeout to check frequently
             )
             
@@ -744,14 +770,18 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state, all_results):
                     # This is a normal inference response with results
                     batch_results = response_json['inference']
                     all_results.extend(batch_results)
+                    new_results_since_last_save.extend(batch_results)
                     
                     # Print progress update (just the count, not the actual data)
                     print(f"Received {len(batch_results)} results, total: {len(all_results)}")
                     
                     # Save results periodically (not on every message to avoid excessive I/O)
                     time_since_last_save = (datetime.now() - last_save_time).total_seconds()
-                    if time_since_last_save >= save_interval:
-                        save_results(all_results, eval_year, rfq_label, append_mode=True)
+                    if time_since_last_save >= save_interval and new_results_since_last_save:
+                        # Only save the new results since last save, not all results
+                        save_results(new_results_since_last_save, eval_year, rfq_label, append_mode=True)
+                        # Clear the new results list after saving
+                        new_results_since_last_save = []
                         last_save_time = datetime.now()
                     
                     # Update message counts
@@ -781,25 +811,37 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state, all_results):
                         expecting_messages = False
                     elif message == 'throttling':
                         # Start retrying the current batch
-                        if not shared_state.throttling:  # Only start a new retry if we're not already retrying
-                            shared_state.start_retry(shared_state.current_batch_index)
-                            print(f"Server is throttling requests for batch {shared_state.current_batch_index+1}")
-                            
-                            # If we're getting a lot of throttling messages, increase the batch delay
-                            global BATCH_DELAY
-                            if shared_state.message_counts[message] > 50 and BATCH_DELAY < 0.5:
-                                BATCH_DELAY *= 1.5
-                                print(f"Increasing batch delay to {BATCH_DELAY:.2f}s due to frequent throttling")
-                            
-                            # If throttling is becoming excessive, consider extending global throttling
-                            if shared_state.global_throttling:
-                                # Extend the throttling duration more aggressively
+                        # Always call start_retry, it will handle the logic of incrementing retry count
+                        shared_state.start_retry(shared_state.current_batch_index)
+                        print(f"Server is throttling requests for batch {shared_state.current_batch_index+1} (retry {shared_state.retry_count}/{MAX_RETRIES})")
+                        
+                        # If we're getting a lot of throttling messages, increase the batch delay
+                        global BATCH_DELAY
+                        if shared_state.message_counts[message] > 50 and BATCH_DELAY < 0.5:
+                            BATCH_DELAY *= 1.5
+                            print(f"Increasing batch delay to {BATCH_DELAY:.2f}s due to frequent throttling")
+                        
+                        # If throttling is becoming excessive, consider extending global throttling
+                        if shared_state.global_throttling:
+                            # Extend the throttling duration, but with a maximum limit
+                            # to avoid excessively long pauses that could cause timeouts
+                            if shared_state.global_throttling_duration < 120:
                                 shared_state.global_throttling_duration += 30
                                 print(f"Extended global throttling pause to {shared_state.global_throttling_duration} seconds")
-                        else:
-                            # Only print throttling messages occasionally
-                            if shared_state.message_counts[message] <= 1 or shared_state.message_counts[message] % 10 == 0:
-                                print(f"Server is throttling requests (count: {shared_state.message_counts[message]})")
+                            else:
+                                # If we've already extended to 120 seconds, try a different approach
+                                # Skip this batch after too many throttling attempts
+                                if shared_state.retry_count >= 25:
+                                    print(f"Maximum throttling retries exceeded for batch {shared_state.current_batch_index+1}, marking as processed and moving on")
+                                    shared_state.mark_batch_processed(shared_state.current_batch_index)
+                                    shared_state.reset_retry()
+                                    # End global throttling to try the next batch
+                                    shared_state.end_global_throttling()
+                        
+                        # Only print throttling messages occasionally
+                        if not (shared_state.message_counts[message] <= 1 or shared_state.message_counts[message] % 10 == 0):
+                            # Skip printing for most throttling messages to reduce log spam
+                            pass
                     elif message == 'insufficient data':
                         # Only print insufficient data messages occasionally
                         if shared_state.message_counts[message] <= 1 or shared_state.message_counts[message] % 10 == 0:
@@ -1054,9 +1096,21 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
     # Print a sample of all_combinations for debugging
     if all_combinations:
         print("\nSample of all_combinations:")
-        for i, combo in enumerate(all_combinations[:3]):
+        # Get the first FIGI and timestamp
+        first_figi = all_combinations[0][0]
+        first_ts = all_combinations[0][1]
+        
+        # Find and print all four combinations for this FIGI and timestamp
+        sample_count = 0
+        for combo in all_combinations:
             figi, ts, side, ats = combo
-            print(f"Combination {i+1}: figi={figi}, timestamp={ts}, side={side}, ats={ats}")
+            if figi == first_figi and ts == first_ts:
+                sample_count += 1
+                print(f"Combination {sample_count}: figi={figi}, timestamp={ts}, side={side}, ats={ats}")
+                
+                # Stop after showing all four combinations
+                if sample_count >= 4:
+                    break
     
     for figi, ts, side, ats in all_combinations:
         # Extract date component
@@ -1099,6 +1153,8 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
     
     # Reconnection loop
     reconnect_attempts = 0
+    last_reconnect_batch = -1  # Track which batch we were on during the last reconnection
+    consecutive_same_batch_reconnects = 0  # Track consecutive reconnects on the same batch
     while reconnect_attempts <= MAX_RECONNECT_ATTEMPTS:
         try:
             # Reset connection state
@@ -1112,6 +1168,52 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
                 if next_batch is not None:
                     print(f"Reconnection progress: {processed_count}/{shared_state.total_batches} batches processed, {remaining_count} remaining")
                     print(f"Resuming from batch {next_batch+1}/{shared_state.total_batches}")
+                    
+                    # Check if we're stuck on the same batch
+                    if next_batch == last_reconnect_batch:
+                        consecutive_same_batch_reconnects += 1
+                        print(f"WARNING: Reconnected to the same batch {consecutive_same_batch_reconnects} times in a row")
+                        
+                        # If we're stuck on the same batch for too long, skip it
+                        if consecutive_same_batch_reconnects >= 3:
+                            print(f"Skipping batch {next_batch+1} after {consecutive_same_batch_reconnects} failed attempts")
+                            shared_state.mark_batch_processed(next_batch)  # Mark it as processed so we skip it
+                            shared_state.reset_retry()  # Reset any retry state
+                            consecutive_same_batch_reconnects = 0  # Reset the counter
+                            
+                            # Get the next batch after skipping
+                            next_batch = shared_state.get_next_unprocessed_batch_index(0)
+                            if next_batch is not None:
+                                print(f"Now resuming from batch {next_batch+1}/{shared_state.total_batches}")
+                    else:
+                        # We've moved to a different batch, reset the counter
+                        consecutive_same_batch_reconnects = 0
+                    
+                    # Update the last reconnect batch
+                    last_reconnect_batch = next_batch
+                    
+                    # Check if we're stuck on the same batch
+                    if next_batch == last_reconnect_batch:
+                        consecutive_same_batch_reconnects += 1
+                        print(f"WARNING: Reconnected to the same batch {consecutive_same_batch_reconnects} times in a row")
+                        
+                        # If we're stuck on the same batch for too long, skip it
+                        if consecutive_same_batch_reconnects >= 3:
+                            print(f"Skipping batch {next_batch+1} after {consecutive_same_batch_reconnects} failed attempts")
+                            shared_state.mark_batch_processed(next_batch)  # Mark it as processed so we skip it
+                            shared_state.reset_retry()  # Reset any retry state
+                            consecutive_same_batch_reconnects = 0  # Reset the counter
+                            
+                            # Get the next batch after skipping
+                            next_batch = shared_state.get_next_unprocessed_batch_index(0)
+                            if next_batch is not None:
+                                print(f"Now resuming from batch {next_batch+1}/{shared_state.total_batches}")
+                    else:
+                        # We've moved to a different batch, reset the counter
+                        consecutive_same_batch_reconnects = 0
+                    
+                    # Update the last reconnect batch
+                    last_reconnect_batch = next_batch
                     
                     # After reconnection, reset any global throttling
                     if shared_state.global_throttling:
@@ -1161,6 +1263,8 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
                         # If there are still unprocessed batches, force a reconnection
                         print("Not all batches were processed, forcing reconnection")
                         shared_state.connection_active = False
+                        # Reset retry state to avoid getting stuck in a retry loop
+                        shared_state.reset_retry()
                         # Continue to the next iteration of the reconnection loop
                 finally:
                     # Cancel the ping task
@@ -1170,20 +1274,22 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
             print(f"Error with websocket connection: {e}")
             
             # Save results before reconnecting, but only if we have a significant number of new results
-            if all_results:
+            if new_results_since_last_save:
                 # Check if we've saved recently
                 time_since_last_save = (datetime.now() - last_save_time).total_seconds() if 'last_save_time' in locals() else float('inf')
                 
                 # Only save if it's been a while or if this is the first reconnection
                 if reconnect_attempts == 1 or time_since_last_save > 30:
-                    save_results(all_results, eval_year, rfq_label)
-                    print(f"Saved {len(all_results)} results before reconnecting")
+                    save_results(new_results_since_last_save, eval_year, rfq_label, append_mode=True)
+                    print(f"Saved {len(new_results_since_last_save)} new results before reconnecting")
+                    new_results_since_last_save = []
                     last_save_time = datetime.now()
                 else:
                     print(f"Skipping save before reconnection (saved {time_since_last_save:.1f} seconds ago)")
             
-            # Increment reconnect attempts
+            # Increment reconnect attempts - this is critical!
             reconnect_attempts += 1
+            print(f"Reconnection attempt {reconnect_attempts}/{MAX_RECONNECT_ATTEMPTS}")
             
             if reconnect_attempts <= MAX_RECONNECT_ATTEMPTS:
                 # Calculate backoff delay with exponential backoff and jitter
@@ -1196,9 +1302,12 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
                 print(f"Maximum reconnection attempts ({MAX_RECONNECT_ATTEMPTS}) exceeded")
     
     # Final save of results
-    if all_results:
-        save_results(all_results, eval_year, rfq_label, append_mode=True)
-        print(f"Final results saved: {len(all_results)} total results")
+    if new_results_since_last_save:
+        save_results(new_results_since_last_save, eval_year, rfq_label, append_mode=True)
+        print(f"Final results saved: {len(all_results)} total results ({len(all_results) - initial_results_count} new)")
+    elif all_results and len(all_results) > initial_results_count:
+        # If we have new results but they were already saved
+        print(f"All results already saved: {len(all_results)} total results ({len(all_results) - initial_results_count} new)")
     else:
         print("No results to save - no inferences were successful")
 
