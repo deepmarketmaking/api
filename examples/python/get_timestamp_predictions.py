@@ -15,6 +15,8 @@ Error Handling:
 - "throttling" errors: When these occur, the script implements exponential backoff and
   retries the batch that caused the throttling. The maximum number of retries and
   initial backoff delay are configurable.
+- Connection errors: The script implements a ping/pong mechanism to keep the connection
+  alive and will attempt to reconnect if the connection is lost.
 """
 
 import os
@@ -25,7 +27,7 @@ import boto3
 import pandas as pd
 import pytz
 from datetime import datetime, time as dt_time, timedelta, date
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 import websockets
 import argparse
 from collections import Counter
@@ -44,6 +46,13 @@ BATCH_DELAY = 0.1
 MAX_RETRIES = 3
 INITIAL_BACKOFF = 1.0  # Initial backoff delay in seconds
 BACKOFF_FACTOR = 2.0   # Multiply delay by this factor for each retry
+
+# Websocket ping interval in seconds
+PING_INTERVAL = 30
+
+# Reconnection configuration
+MAX_RECONNECT_ATTEMPTS = 5
+RECONNECT_BACKOFF = 2.0  # Initial backoff delay for reconnection in seconds
 
 def load_universe() -> List[str]:
     """
@@ -203,12 +212,22 @@ class SharedState:
         self.throttling = False
         self.message_counts = Counter()
         self.last_message_time = datetime.now()
+        self.last_ping_time = datetime.now()
         
         # Retry state
         self.current_batch_index = 0
         self.retry_batch_index = None
         self.retry_count = 0
         self.backoff_delay = INITIAL_BACKOFF
+        
+        # Connection state
+        self.connection_active = True
+        self.reconnect_count = 0
+        self.reconnect_delay = RECONNECT_BACKOFF
+        
+        # Progress tracking
+        self.processed_batch_indices = set()
+        self.total_batches = 0
 
     def start_retry(self, batch_index: int):
         """
@@ -230,6 +249,67 @@ class SharedState:
         self.retry_batch_index = None
         self.retry_count = 0
         self.backoff_delay = INITIAL_BACKOFF
+    
+    def mark_batch_processed(self, batch_index: int):
+        """
+        Mark a batch as processed
+        
+        Args:
+            batch_index: Index of the batch to mark as processed
+        """
+        self.processed_batch_indices.add(batch_index)
+    
+    def is_batch_processed(self, batch_index: int) -> bool:
+        """
+        Check if a batch has been processed
+        
+        Args:
+            batch_index: Index of the batch to check
+            
+        Returns:
+            bool: True if the batch has been processed, False otherwise
+        """
+        return batch_index in self.processed_batch_indices
+    
+    def get_next_unprocessed_batch_index(self, start_index: int = 0) -> Optional[int]:
+        """
+        Get the next unprocessed batch index
+        
+        Args:
+            start_index: Index to start searching from
+            
+        Returns:
+            Optional[int]: The next unprocessed batch index, or None if all batches are processed
+        """
+        for i in range(start_index, self.total_batches):
+            if not self.is_batch_processed(i):
+                return i
+        return None
+
+async def ping_websocket(ws, shared_state):
+    """
+    Coroutine to send periodic pings to keep the websocket connection alive
+    
+    Args:
+        ws: Websocket connection
+        shared_state: Shared state between coroutines
+    """
+    while shared_state.connection_active:
+        try:
+            # Check if it's time to send a ping
+            time_since_last_ping = (datetime.now() - shared_state.last_ping_time).total_seconds()
+            if time_since_last_ping >= PING_INTERVAL:
+                # Send a ping
+                await ws.ping()
+                shared_state.last_ping_time = datetime.now()
+                print(f"Sent websocket ping to keep connection alive")
+            
+            # Wait a bit before checking again
+            await asyncio.sleep(5)
+        except Exception as e:
+            print(f"Error sending ping: {e}")
+            # Don't break the loop, just try again later
+            await asyncio.sleep(5)
 
 async def send_batches(ws, batches, batch_size, shared_state):
     """
@@ -242,9 +322,15 @@ async def send_batches(ws, batches, batch_size, shared_state):
         shared_state: Shared state between coroutines
     """
     total_batches = len(batches)
-    i = 0
+    shared_state.total_batches = total_batches
     
-    while i < total_batches:
+    # Start from the first unprocessed batch
+    i = shared_state.get_next_unprocessed_batch_index(0)
+    if i is None:
+        print("All batches have been processed")
+        return
+    
+    while i < total_batches and shared_state.connection_active:
         # Check if we're retrying a specific batch due to throttling
         if shared_state.throttling and shared_state.retry_batch_index is not None:
             # Get the batch to retry
@@ -265,18 +351,28 @@ async def send_batches(ws, batches, batch_size, shared_state):
                 continue
             
             # Send the retry batch
-            msg = {'inference': batch}
-            await ws.send(json.dumps(msg))
-            print(f"Retrying batch {retry_index+1}/{total_batches} ({len(batch)} requests)")
-            
-            # Update the current batch index
-            shared_state.current_batch_index = retry_index
-            
-            # Wait for the receiver to process the response
-            # We don't increment i here because we're retrying the same batch
-            await asyncio.sleep(0.5)  # Short delay to allow receiver to process
+            try:
+                msg = {'inference': batch}
+                await ws.send(json.dumps(msg))
+                print(f"Retrying batch {retry_index+1}/{total_batches} ({len(batch)} requests)")
+                
+                # Update the current batch index
+                shared_state.current_batch_index = retry_index
+                
+                # Wait for the receiver to process the response
+                # We don't increment i here because we're retrying the same batch
+                await asyncio.sleep(0.5)  # Short delay to allow receiver to process
+            except Exception as e:
+                print(f"Error sending retry batch {retry_index+1}: {e}")
+                shared_state.connection_active = False
+                break
             
         else:
+            # Skip already processed batches
+            if shared_state.is_batch_processed(i):
+                i += 1
+                continue
+            
             # Normal batch sending (not retrying)
             batch = batches[i]
             
@@ -287,18 +383,24 @@ async def send_batches(ws, batches, batch_size, shared_state):
             msg = {'inference': batch}
             
             # Send the request
-            await ws.send(json.dumps(msg))
-            print(f"Sent batch {i+1}/{total_batches} ({len(batch)} requests)")
-            
-            # Update the current batch index
-            shared_state.current_batch_index = i
-            
-            # Move to the next batch
-            i += 1
+            try:
+                await ws.send(json.dumps(msg))
+                print(f"Sent batch {i+1}/{total_batches} ({len(batch)} requests)")
+                
+                # Update the current batch index
+                shared_state.current_batch_index = i
+                
+                # Move to the next batch
+                i += 1
+            except Exception as e:
+                print(f"Error sending batch {i+1}: {e}")
+                shared_state.connection_active = False
+                break
     
-    print(f"All {total_batches} batches sent")
+    if i >= total_batches:
+        print(f"All {total_batches} batches sent")
 
-async def receive_messages(ws, eval_year, rfq_label, shared_state):
+async def receive_messages(ws, eval_year, rfq_label, shared_state, all_results):
     """
     Coroutine to receive and process messages from the websocket server
     
@@ -307,11 +409,11 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state):
         eval_year: Year of evaluation
         rfq_label: RFQ label (price or spread)
         shared_state: Shared state between coroutines
+        all_results: List of all results received so far
     
     Returns:
         List[Dict]: List of all results received
     """
-    all_results = []
     last_save_time = datetime.now()
     save_interval = 10  # Save every 10 seconds
     
@@ -328,7 +430,7 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state):
     # Flag to indicate if we're still expecting messages
     expecting_messages = True
     
-    while expecting_messages:
+    while expecting_messages and shared_state.connection_active:
         try:
             # Wait for a message with a timeout
             message_task = asyncio.create_task(ws.recv())
@@ -366,7 +468,12 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state):
                     # If we were retrying a batch and got a successful response, reset retry state
                     if shared_state.throttling and shared_state.retry_batch_index is not None:
                         print(f"Retry successful for batch {shared_state.retry_batch_index+1}")
+                        # Mark the batch as processed
+                        shared_state.mark_batch_processed(shared_state.retry_batch_index)
                         shared_state.reset_retry()
+                    else:
+                        # Mark the current batch as processed
+                        shared_state.mark_batch_processed(shared_state.current_batch_index)
                     
                 elif 'message' in response_json:
                     # This is a message response (like 'insufficient data' or 'throttling')
@@ -434,6 +541,7 @@ async def receive_messages(ws, eval_year, rfq_label, shared_state):
             continue
         except Exception as e:
             print(f"Error receiving message: {e}")
+            shared_state.connection_active = False
             break
     
     # Print final message counts
@@ -541,30 +649,72 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
     # Create shared state for communication between coroutines
     shared_state = SharedState()
     
-    # Open the websocket connection once
-    try:
-        print(f"Connecting to websocket server at {server_address}")
-        async with websockets.connect(f"ws://{server_address}") as ws:
-            print("Connected to websocket server")
+    # Try to load existing results if available
+    all_results = []
+    filename = f"timestamp_predictions_{eval_year}_{rfq_label}.csv"
+    local_path = os.path.join(os.getcwd(), filename)
+    if os.path.exists(local_path):
+        try:
+            print(f"Found existing results file: {local_path}")
+            results_df = pd.read_csv(local_path)
+            all_results = results_df.to_dict('records')
+            print(f"Loaded {len(all_results)} existing results")
+        except Exception as e:
+            print(f"Error loading existing results: {e}")
+            all_results = []
+    
+    # Reconnection loop
+    reconnect_attempts = 0
+    while reconnect_attempts <= MAX_RECONNECT_ATTEMPTS:
+        try:
+            # Reset connection state
+            shared_state.connection_active = True
             
-            # Run the send and receive coroutines concurrently
-            sender = asyncio.create_task(send_batches(ws, batches, batch_size, shared_state))
-            receiver = asyncio.create_task(receive_messages(ws, eval_year, rfq_label, shared_state))
+            print(f"Connecting to websocket server at {server_address} (attempt {reconnect_attempts+1}/{MAX_RECONNECT_ATTEMPTS+1})")
+            async with websockets.connect(f"ws://{server_address}") as ws:
+                print("Connected to websocket server")
+                
+                # Start the ping task to keep the connection alive
+                ping_task = asyncio.create_task(ping_websocket(ws, shared_state))
+                
+                # Run the send and receive coroutines concurrently
+                sender = asyncio.create_task(send_batches(ws, batches, batch_size, shared_state))
+                receiver = asyncio.create_task(receive_messages(ws, eval_year, rfq_label, shared_state, all_results))
+                
+                # Wait for both coroutines to complete
+                await asyncio.gather(sender, receiver)
+                
+                # Cancel the ping task
+                ping_task.cancel()
+                
+                # If we got here without an exception, we're done
+                break
+        
+        except Exception as e:
+            print(f"Error with websocket connection: {e}")
             
-            # Wait for both coroutines to complete
-            await sender
-            all_results = await receiver
-            
-            # Final save of results
+            # Save results before reconnecting
             if all_results:
                 save_results(all_results, eval_year, rfq_label)
-                print(f"Final results saved: {len(all_results)} total results")
+                print(f"Saved {len(all_results)} results before reconnecting")
+            
+            # Increment reconnect attempts
+            reconnect_attempts += 1
+            
+            if reconnect_attempts <= MAX_RECONNECT_ATTEMPTS:
+                # Calculate backoff delay with exponential backoff
+                reconnect_delay = RECONNECT_BACKOFF * (2 ** (reconnect_attempts - 1))
+                print(f"Reconnecting in {reconnect_delay:.2f} seconds...")
+                await asyncio.sleep(reconnect_delay)
             else:
-                print("No results to save - no inferences were successful")
+                print(f"Maximum reconnection attempts ({MAX_RECONNECT_ATTEMPTS}) exceeded")
     
-    except Exception as e:
-        print(f"Error with websocket connection: {e}")
-        return
+    # Final save of results
+    if all_results:
+        save_results(all_results, eval_year, rfq_label)
+        print(f"Final results saved: {len(all_results)} total results")
+    else:
+        print("No results to save - no inferences were successful")
 
 def main():
     """
@@ -573,7 +723,7 @@ def main():
     parser = argparse.ArgumentParser(description='Evaluate at specific timestamps using the websocket API')
     parser.add_argument('eval_year', help='Year to evaluate on')
     parser.add_argument('server_address', help='Domain:port of the websocket server (e.g., localhost:8855)')
-    parser.add_argument('--rfq-label', choices=['price', 'spread'], default='spread', 
+    parser.add_argument('--rfq-label', choices=['price', 'spread'], default='spread',
                         help='RFQ label (price or spread, default: spread)')
     parser.add_argument('--test', action='store_true', help='Test mode: only evaluate on the most recent trading day')
     parser.add_argument('--timeout', type=int, default=60,
@@ -584,20 +734,26 @@ def main():
                         help='Maximum number of retries for throttled batches (default: 3)')
     parser.add_argument('--backoff-factor', type=float, default=2.0,
                         help='Exponential backoff factor for retries (default: 2.0)')
+    parser.add_argument('--ping-interval', type=int, default=30,
+                        help='Interval in seconds between websocket pings (default: 30)')
+    parser.add_argument('--max-reconnect', type=int, default=5,
+                        help='Maximum number of reconnection attempts (default: 5)')
     
     args = parser.parse_args()
     
     # Set the global parameters
-    global TIMEOUT_SECONDS, BATCH_DELAY, MAX_RETRIES, BACKOFF_FACTOR
+    global TIMEOUT_SECONDS, BATCH_DELAY, MAX_RETRIES, BACKOFF_FACTOR, PING_INTERVAL, MAX_RECONNECT_ATTEMPTS
     TIMEOUT_SECONDS = args.timeout
     BATCH_DELAY = args.batch_delay
     MAX_RETRIES = args.max_retries
     BACKOFF_FACTOR = args.backoff_factor
+    PING_INTERVAL = args.ping_interval
+    MAX_RECONNECT_ATTEMPTS = args.max_reconnect
     
     asyncio.run(evaluate_at_timestamps(
-        args.eval_year, 
-        args.server_address, 
-        args.rfq_label, 
+        args.eval_year,
+        args.server_address,
+        args.rfq_label,
         args.test
     ))
 
