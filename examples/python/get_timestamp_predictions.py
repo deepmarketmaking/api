@@ -187,7 +187,16 @@ def save_results(results: List[Dict], eval_year: str, rfq_label: str, append_mod
     
     # Convert timestamp strings to datetime objects if present
     if 'timestamp' in results_df.columns and len(results_df) > 0:
+        # Store original timestamps for debugging
+        original_timestamps = results_df['timestamp'].iloc[:5].tolist() if len(results_df) >= 5 else results_df['timestamp'].tolist()
+        
+        # Convert to datetime
         results_df['timestamp'] = pd.to_datetime(results_df['timestamp'])
+        
+        # Print sample of original and converted timestamps for debugging
+        converted_timestamps = results_df['timestamp'].iloc[:5].tolist() if len(results_df) >= 5 else results_df['timestamp'].tolist()
+        print(f"Sample original timestamps: {original_timestamps}")
+        print(f"Sample converted timestamps: {converted_timestamps}")
     
     # Sort by timestamp, figi, side, and ats_indicator if present
     sort_columns = [col for col in ['timestamp', 'figi', 'side', 'ats_indicator'] if col in results_df.columns]
@@ -859,16 +868,35 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
             # Create a set of already processed combinations
             for result in all_results:
                 if all(k in result for k in ['figi', 'timestamp', 'side', 'ats_indicator']):
-                    # Create a unique key for this combination
-                    key = (
-                        result['figi'],
-                        result['timestamp'],
-                        result['side'],
-                        result['ats_indicator']
-                    )
-                    processed_keys.add(key)
+                    # Extract the components for the key
+                    figi = result['figi']
+                    side = result['side']
+                    ats = result['ats_indicator']
+                    
+                    # For timestamp, use a simpler approach that's less sensitive to format
+                    try:
+                        # Parse the timestamp to a datetime object
+                        if isinstance(result['timestamp'], str):
+                            dt = pd.to_datetime(result['timestamp'])
+                        else:
+                            dt = result['timestamp']
+                            
+                        # Extract just the date and hour/minute components
+                        # This is less sensitive to exact format and timezone issues
+                        date_str = dt.strftime('%Y-%m-%d')
+                        time_str = dt.strftime('%H:%M')
+                        
+                        # Create a key that's less sensitive to exact format
+                        key = (figi, date_str, time_str, side, ats)
+                        processed_keys.add(key)
+                    except Exception as e:
+                        print(f"Warning: Could not process timestamp '{result['timestamp']}': {e}")
             
+            # Print some sample keys for debugging
+            sample_keys = list(processed_keys)[:3] if processed_keys else []
             print(f"Identified {len(processed_keys)} already processed combinations")
+            if sample_keys:
+                print(f"Sample keys: {sample_keys}")
         except Exception as e:
             print(f"Error loading existing results: {e}")
             all_results = []
@@ -877,21 +905,38 @@ async def evaluate_at_timestamps(eval_year: str, server_address: str,
     # Filter out combinations that have already been processed
     filtered_combinations = []
     for figi, ts, side, ats in all_combinations:
-        # Format timestamp for comparison
-        ts_str = format_timestamp_for_api(ts)
+        # Extract the same date and time components as we did for the processed results
+        date_str = ts.strftime('%Y-%m-%d')
+        time_str = ts.strftime('%H:%M')
         
-        # Create a key for this combination
-        key = (figi, ts_str, side, ats)
+        # Create a key using the same format as for processed combinations
+        key = (figi, date_str, time_str, side, ats)
+        
+        # Debug: Check if this key exists in processed_keys
+        if len(filtered_combinations) == 0 and key in processed_keys:
+            print(f"Debug: Found matching key: {key}")
         
         # Only include if not already processed
         if key not in processed_keys:
             filtered_combinations.append((figi, ts, side, ats))
+        else:
+            # This combination has already been processed
+            pass
     
     # Report on filtering
     skipped_count = len(all_combinations) - len(filtered_combinations)
     if skipped_count > 0:
         print(f"Skipping {skipped_count} already processed combinations")
         print(f"Processing {len(filtered_combinations)} new combinations")
+        
+        # Print some sample combinations that were skipped and some that will be processed
+        if len(all_combinations) > 0:
+            sample_all = all_combinations[:2] if len(all_combinations) >= 2 else all_combinations
+            print(f"Sample of all combinations: {sample_all}")
+        if len(filtered_combinations) > 0:
+            sample_filtered = filtered_combinations[:2] if len(filtered_combinations) >= 2 else filtered_combinations
+            print(f"Sample of filtered combinations: {sample_filtered}")
+        
         all_combinations = filtered_combinations
     
     # Reconnection loop
