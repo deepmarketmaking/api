@@ -18,13 +18,34 @@ async def main():
             'quantity': 1_000_000,
             'side': 'bid',
             'ats_indicator': "N",
-            'timestamp': ['2023-11-01T15:10:07.661Z'],
+            'timestamp': ['2025-07-30T00:25:07.661Z'],
             # You can supply as many timestamps as you want here to receive historical inferences
             'subscribe': False,
         },  # You can list as many inference requests as you want here (up to the throttling limits).
-    ], 'token': authenticate_user(username, password)}
+        {
+            'rfq_label': 'spread',
+            'figi': 'BBG003LZRTD5',
+            'quantity': 1_000_000,
+            'side': 'dealer',
+            'ats_indicator': "N",
+            'timestamp': ['2025-07-30T00:25:07.661Z'],
+            # You can supply as many timestamps as you want here to receive historical inferences
+            'subscribe': False,
+        },  
+        {
+            'rfq_label': 'spread',
+            'figi': 'BBG003LZRTD5',
+            'quantity': 1_000_000,
+            'side': 'offer',
+            'ats_indicator': "N",
+            'timestamp': ['2025-07-30T00:25:07.661Z'],
+            # You can supply as many timestamps as you want here to receive historical inferences
+            'subscribe': False,
+        },  
+    ]}
 
-    ws = await websockets.connect("wss://staging1.deepmm.com")
+    #ws = await websockets.connect("ws://localhost:8855")
+    ws = await websockets.connect("ws://localhost:8855")
     await ws.send(json.dumps(msg))
 
     # We loop receiving messages because this is a websocket connection, so responses
