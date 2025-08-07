@@ -269,7 +269,7 @@ Here's a sample response:
 }
 ```
 
-The attributes of the assumed trade are indicated for each of the inferences. The spread and prices come down as percentiles from the 5th to the 95th percentiles in 5% increments. For spread the treasury benchmark cusip is noted in the response. 
+The attributes of the assumed trade are indicated for each of the inferences. The spread and prices come down as percentiles from the 5th to the 95th percentiles in 5% increments. For spread the treasury benchmark cusip is noted in the response. The date is in the UTC timezone.
 
 ## Known Issues
 
