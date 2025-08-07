@@ -324,8 +324,8 @@ async def retrieve_batch(batch):
     
 
 def get_start_and_end_date(year):
-    start_date = datetime(year = year, month = 1, day = 1)
-    end_date = datetime(year=year, month = 7, day = 30)
+    start_date = datetime(year = year, month = 8, day = 1)
+    end_date = datetime(year=year, month = 12, day = 31)
     end_date = min(end_date, datetime.now())
     return start_date,end_date
 
