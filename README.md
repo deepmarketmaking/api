@@ -129,7 +129,7 @@ This creates an inference request which will cause the server to send regular up
             'subscribe': True,
         },
         {
-            'rfq_label': 'spread',
+            'rfq_label': 'price',
             'figi': 'BBG003LZRTD5',
             'quantity': 100_000,
             'side': 'offer',
@@ -139,12 +139,144 @@ This creates an inference request which will cause the server to send regular up
     ]}
 ```
 
+Here's a sample response:
+
+```python
+    "inference": [
+        {
+            "ats_indicator": "N",
+            "date": "2025-08-07T12:59:28.846Z",
+            "figi": "BBG003LZRTD5",
+            "quantity": 1000000,
+            "side": "bid",
+            "spread": [
+                -22.91455864906311,
+                -7.083559036254883,
+                2.160295844078064,
+                8.799150586128235,
+                14.376422762870789,
+                18.862897157669067,
+                23.15084934234619,
+                26.953154802322388,
+                30.642613768577576,
+                34.11840796470642,
+                37.46683597564697,
+                40.637338161468506,
+                43.72316598892212,
+                46.88047468662262,
+                50.239020586013794,
+                53.98953557014465,
+                58.43271017074585,
+                64.13162350654602,
+                74.54012632369995
+            ],
+            "tenor": 2,
+            "treasury_cusip": "91282CNQ0",
+            "cusip": "594918BJ2"
+        },
+        {
+            "ats_indicator": "Y",
+            "date": "2025-08-07T12:59:28.846Z",
+            "figi": "BBG003LZRTD5",
+            "quantity": 1000000,
+            "side": "offer",
+            "spread": [
+                -41.308724880218506,
+                -24.528831243515015,
+                -14.819729328155518,
+                -7.663071155548096,
+                -1.518470048904419,
+                3.519865870475769,
+                8.44331979751587,
+                12.850263714790344,
+                17.133909463882446,
+                21.212029457092285,
+                25.10717809200287,
+                28.9124995470047,
+                32.68296420574188,
+                36.629754304885864,
+                40.91789126396179,
+                45.74577212333679,
+                51.37031078338623,
+                58.68079662322998,
+                71.77832126617432
+            ],
+            "tenor": 2,
+            "treasury_cusip": "91282CNQ0",
+            "cusip": "594918BJ2"
+        },
+        {
+            "ats_indicator": "Y",
+            "date": "2025-08-07T12:59:28.846Z",
+            "figi": "BBG003LZRTD5",
+            "quantity": 100000,
+            "side": "bid",
+            "spread": [
+                -41.308724880218506,
+                -24.528831243515015,
+                -14.819729328155518,
+                -7.663071155548096,
+                -1.518470048904419,
+                3.519865870475769,
+                8.44331979751587,
+                12.850263714790344,
+                17.133909463882446,
+                21.212029457092285,
+                25.10717809200287,
+                28.9124995470047,
+                32.68296420574188,
+                36.629754304885864,
+                40.91789126396179,
+                45.74577212333679,
+                51.37031078338623,
+                58.68079662322998,
+                71.77832126617432
+            ],
+            "tenor": 2,
+            "treasury_cusip": "91282CNQ0",
+            "cusip": "594918BJ2"
+        },
+        {
+            "ats_indicator": "N",
+            "date": "2025-08-07T12:59:28.846Z",
+            "figi": "BBG003LZRTD5",
+            "quantity": 100000,
+            "side": "offer",
+            "price": [
+                80.9112777709961,
+                81.02932739257812,
+                81.09603881835938,
+                81.14326477050781,
+                81.17647552490234,
+                81.20579528808594,
+                81.225830078125,
+                81.24657440185547,
+                81.26457977294922,
+                81.28137969970703,
+                81.29777526855469,
+                81.31477355957031,
+                81.33233642578125,
+                81.34815216064453,
+                81.37256622314453,
+                81.40092468261719,
+                81.43618774414062,
+                81.48920440673828,
+                81.58154296875
+            ],
+            "cusip": "594918AR5"
+        }
+    ]
+}
+```
+
+The attributes of the assumed trade are indicated for each of the inferences. The spread and prices come down as percentiles from the 5th to the 95th percentiles in 5% increments. For spread the treasury benchmark cusip is noted in the response. 
+
 ## Known Issues
 
 - **Unrecognized FIGIs**: We currently have about 94% coverage in the investment grade (IG) index, and a similar percentage in high yield (HY) bonds index, so some of the FIGI values you may send to the API will trigger a message saying that there are unrecognized FIGIs, and will have a list of the FIGIs. The issue is that the API currently returns a list of numbers which are our internal ID numbers. We are working on rolling out a fix so that the unrecognized FIGIs are reported back. In staging we have the step-up-step down bonds available, which increases our total universe size by about 6,000, and this will be published to production soon.
 - **Websockets closed when there's an error**: In some cases when an error is reported back by the API, the websocket connection pre-maturely shuts down. We are working on a fix
 - **Portfolio trades not adjusted for**: We are planning a new version of the model which takes into account whether a trade is a portfolio trade or not. Right now our model is not able to see whether a trade is a portfolio trade or not, and so it's not able to learn to mostly ignore a portfolio trades price like you would expect.
-- **On the run rates roll-overs**: When there is a new on-the-run treasury, we immediately start using it as the benchmark rather than waiting the one week convention. We are working with our data provider to fix this issue. This affects the estimation of spread and ytm, as well as the accuracy in price space for bonds benchmarked to a treasury during this 1-week period. This has been fixed on our staging1 server, except for the 30-year one-off-the-run treasury, which still a time period between the auction and the Monday after the auction where we have switched to the new one-off-the-run treasury a bit early instead of waiting until Monday to make the switch.
+- **On the run rates roll-overs**: When there is a new on-the-run treasury, there are some issues we are working to resolve in selecting the correct (street convention) treasury benchmark to use to calculate spread. We're working hard to resolve this issue.
 
 
 ## PyXLL plugin for excel integration
