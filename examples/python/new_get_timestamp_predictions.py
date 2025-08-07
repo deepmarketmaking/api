@@ -210,31 +210,54 @@ async def main():
         await f.write(b'[')
 
     lock = asyncio.Lock()
-    semaphore = asyncio.Semaphore(6)  # Keep at 6 as you found this works well
     batch_delay = BATCH_DELAY
+    max_concurrent = 6  # Keep at 6 as you found this works well
     
     async def process_batch(idx):
         nonlocal batch_delay
-        async with semaphore:
-            print(f"Processing batch {idx} of {len(batches)}", flush=True)
-            try:
-                batch_result = await retrieve_batch(batches[idx], idx)
-                for result in batch_result:
-                    async with lock:
-                        await append_item_to_json(output_file, result)
-            except Exception as e:
-                print(f"Batch {idx} failed: {e}", flush=True)
-                # Increase delay on failure
-                batch_delay = min(batch_delay * BACKOFF_FACTOR, MAX_BACKOFF)
-            finally:
-                # Minimal delay to prevent overwhelming the server
-                await asyncio.sleep(max(0.5, batch_delay))
+        print(f"Processing batch {idx} of {len(batches)}", flush=True)
+        try:
+            batch_result = await retrieve_batch(batches[idx], idx)
+            for result in batch_result:
+                async with lock:
+                    await append_item_to_json(output_file, result)
+        except Exception as e:
+            print(f"Batch {idx} failed: {e}", flush=True)
+            # Increase delay on failure
+            batch_delay = min(batch_delay * BACKOFF_FACTOR, MAX_BACKOFF)
+        finally:
+            # Minimal delay to prevent overwhelming the server
+            await asyncio.sleep(max(0.5, batch_delay))
 
-    # Create all tasks at once - the semaphore will control concurrency
-    tasks = [process_batch(i) for i in range(start_batch, len(batches))]
+    # Process batches with a queue-based approach for continuous processing
+    async def worker():
+        while True:
+            try:
+                batch_idx = await batch_queue.get()
+                if batch_idx is None:  # Sentinel to stop worker
+                    break
+                await process_batch(batch_idx)
+                batch_queue.task_done()
+            except Exception as e:
+                print(f"Worker error: {e}", flush=True)
+                batch_queue.task_done()
+
+    # Create queue and add all batch indices
+    batch_queue = asyncio.Queue()
+    for i in range(start_batch, len(batches)):
+        await batch_queue.put(i)
+
+    # Start worker tasks
+    workers = [asyncio.create_task(worker()) for _ in range(max_concurrent)]
     
     try:
-        await asyncio.gather(*tasks)
+        # Wait for all batches to be processed
+        await batch_queue.join()
+        
+        # Stop workers
+        for _ in range(max_concurrent):
+            await batch_queue.put(None)
+        await asyncio.gather(*workers)
 
     finally:
         print(f"Saving results to local file for year {year} starting batch {start_batch}", flush=True)
