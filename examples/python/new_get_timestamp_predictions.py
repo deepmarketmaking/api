@@ -30,7 +30,7 @@ S3_BUCKET = "deepmm.temp"
 S3_FOLDER = "timestamp_predictions"
 
 # Timeout in seconds after the last message before closing the connection
-TIMEOUT_SECONDS = 30
+TIMEOUT_SECONDS = 80
 # Initial delay between batches (seconds)
 BATCH_DELAY = 0.1
 
@@ -63,12 +63,12 @@ def load_universe() -> List[str]:
         # Parse the content (assuming one FIGI per line)
         figi_strings = [line.strip() for line in content.split('\n') if line.strip()]
         
-        print(f"Loaded {len(figi_strings)} bonds from universe.txt")
+        print(f"Loaded {len(figi_strings)} bonds from universe.txt", flush=True)
         
         return figi_strings
     except Exception as e:
-        print(f"Error loading universe from S3: {e}")
-        print("Using a small test set of FIGIs instead")
+        print(f"Error loading universe from S3: {e}", flush=True)
+        print("Using a small test set of FIGIs instead", flush=True)
         # Return a small test set of FIGIs
         return ["BBG003LZRTD5", "BBG00BLVJYZ2", "BBG00D3FQP27"]
     
@@ -98,12 +98,12 @@ def figi_to_issue_date() -> Dict[str, Dict[str, datetime]]:
             bond_info['maturity_date'] = eastern_tz.localize(datetime.strptime(bond['m'], '%Y-%m-%d'))
             figi_bond_info[bond['F']] = bond_info
         
-        print(f"Loaded bond information for {len(figi_bond_info)} bonds")
+        print(f"Loaded bond information for {len(figi_bond_info)} bonds", flush=True)
         
         return figi_bond_info
     
     except Exception as e:
-        print(f"Error loading bond data from S3: {e}")
+        print(f"Error loading bond data from S3: {e}", flush=True)
         return {}
     
 def get_trading_days(start_date: datetime, end_date: datetime) -> List[datetime]:
@@ -125,7 +125,7 @@ def get_trading_days(start_date: datetime, end_date: datetime) -> List[datetime]
     # Filter out weekends (0 = Monday, 6 = Sunday in weekday())
     trading_days = [day for day in all_days if day.weekday() < 5]
     
-    print(f"Found {len(trading_days)} trading days between {start_date.strftime('%Y-%m-%d')} and {end_date.strftime('%Y-%m-%d')}")
+    print(f"Found {len(trading_days)} trading days between {start_date.strftime('%Y-%m-%d')} and {end_date.strftime('%Y-%m-%d')}", flush=True)
     return trading_days
 
 def generate_timestamps(trading_days: List[datetime]) -> List[datetime]:
@@ -153,7 +153,7 @@ def generate_timestamps(trading_days: List[datetime]) -> List[datetime]:
         afternoon = eastern_tz.localize(datetime.combine(day_date, dt_time(16, 0)))
         timestamps.append(afternoon)
     
-    print(f"Generated {len(timestamps)} timestamps")
+    print(f"Generated {len(timestamps)} timestamps", flush=True)
     return timestamps
 
 def format_timestamp_for_api(timestamp: datetime) -> str:
@@ -189,57 +189,55 @@ async def append_item_to_json(file_path, item):
 
 async def main():
     if len(sys.argv) < 2:
-        print("Usage: python new_get_timestamp_predictions.py <evaluation year> <starting batch>")
+        print("Usage: python new_get_timestamp_predictions.py <evaluation year> <starting batch>", flush=True)
     
     year = int(sys.argv[1])
     start_batch = int(sys.argv[2])
     
     timestamps = generate_timestamps(get_trading_days(*get_start_and_end_date(year)))
     timestamp_count = len(timestamps)
-    print(f"Timestamp count: {timestamp_count}")
+    print(f"Timestamp count: {timestamp_count}", flush=True)
     figis = load_universe()
     figi_bond_info = figi_to_issue_date()
     inference_requests = get_inference_requests(figis, timestamps, figi_bond_info)
 
     batch_size = int(32_000 / timestamp_count) # Because each inference request has a list of timestamps.
     batches = [inference_requests[i:i + batch_size] for i in range(0, len(inference_requests), batch_size)]
-    print(f"Batches count: {len(batches)}")
+    print(f"Batches count: {len(batches)}", flush=True)
 
     output_file = f"timestamp_predictions_{year}_{start_batch}.json"
     async with aiofiles.open(output_file, 'wb') as f:
         await f.write(b'[')
 
     lock = asyncio.Lock()
-    semaphore = asyncio.Semaphore(4)  # Limit to 3 concurrent batches to balance speed/throttling
-    tasks = []
+    semaphore = asyncio.Semaphore(6)  # Keep at 6 as you found this works well
     batch_delay = BATCH_DELAY
-    i = start_batch
-    while i < len(batches):
-        async def process_batch(idx):
-            nonlocal batch_delay
-            async with semaphore:
-                print(f"Processing batch {idx} of {len(batches)}")
-                try:
-                    batch_result = await retrieve_batch(batches[idx])
-                    for result in batch_result:
-                        async with lock:
-                            await append_item_to_json(output_file, result)
-                except Exception as e:
-                    print(f"Batch {idx} failed: {e}")
-                    # Increase delay on failure
-                    batch_delay = min(batch_delay * BACKOFF_FACTOR, MAX_BACKOFF)
-                finally:
-                    # Enforce rate limit: 1 request every 30 seconds
-                    await asyncio.sleep(max(30.0, batch_delay))
-        
-        tasks.append(process_batch(i))
-        i += 1
+    
+    async def process_batch(idx):
+        nonlocal batch_delay
+        async with semaphore:
+            print(f"Processing batch {idx} of {len(batches)}", flush=True)
+            try:
+                batch_result = await retrieve_batch(batches[idx], idx)
+                for result in batch_result:
+                    async with lock:
+                        await append_item_to_json(output_file, result)
+            except Exception as e:
+                print(f"Batch {idx} failed: {e}", flush=True)
+                # Increase delay on failure
+                batch_delay = min(batch_delay * BACKOFF_FACTOR, MAX_BACKOFF)
+            finally:
+                # Minimal delay to prevent overwhelming the server
+                await asyncio.sleep(max(0.5, batch_delay))
 
+    # Create all tasks at once - the semaphore will control concurrency
+    tasks = [process_batch(i) for i in range(start_batch, len(batches))]
+    
     try:
         await asyncio.gather(*tasks)
 
     finally:
-        print(f"Saving results to local file for year {year} starting batch {start_batch}")
+        print(f"Saving results to local file for year {year} starting batch {start_batch}", flush=True)
         async with aiofiles.open(output_file, 'ab+') as f:
             await f.seek(0, 2)
             pos = await f.tell()
@@ -249,11 +247,20 @@ async def main():
                 await f.write(b'\n]')
 
 
-async def retrieve_batch(batch):
+async def retrieve_batch(batch, batch_idx=None):
     uri = "ws://localhost:8855"
     inferences = []
     retry_count = 0
     backoff = INITIAL_BACKOFF
+
+    # Calculate expected number of inferences for this batch
+    expected_inferences = 0
+    for request in batch:
+        # Each request has a list of timestamps, so we expect one inference per timestamp
+        expected_inferences += len(request["timestamp"])
+    
+    batch_prefix = f"Batch {batch_idx}: " if batch_idx is not None else ""
+    print(f"{batch_prefix}Expecting {expected_inferences} inferences for batch of {len(batch)} requests", flush=True)
 
     while retry_count < MAX_RETRIES:
         try:
@@ -263,31 +270,58 @@ async def retrieve_batch(batch):
                 open_timeout=1,
                 ping_timeout=None  # Detect dead connections quickly
             ) as ws:
-                print(f"Requesting ")
+                print(f"{batch_prefix}Requesting batch with {len(batch)} inference requests", flush=True)
                 await ws.send(json.dumps({"inference":batch}))
                 
-                last_inference_time = time.time()
+                last_message_time = time.time()
+                accounted_inferences = 0  # Track inferences received + insufficient data responses
+                
                 while True:
                     current_time = time.time()
-                    elapsed = current_time - last_inference_time
+                    elapsed = current_time - last_message_time
                     remaining_timeout = max(0, TIMEOUT_SECONDS - elapsed)
                     
                     try:
                         msg = await asyncio.wait_for(ws.recv(), timeout=remaining_timeout)
                         msg_json = json.loads(msg)
+                        last_message_time = time.time()  # Reset timer on any message
                         
                         if "inference" in msg_json:
-                            inferences.append(msg_json["inference"])
-                            last_inference_time = time.time()  # Reset timer
+                            inference_data = msg_json["inference"]
+                            inferences.append(inference_data)
+                            # Count the actual number of inferences in this message
+                            if isinstance(inference_data, list):
+                                inference_count = len(inference_data)
+                            else:
+                                inference_count = 1
+                            accounted_inferences += inference_count
+                            print(f"{batch_prefix}Received {inference_count} inferences. Total accounted: {accounted_inferences}/{expected_inferences}", flush=True)
+                            
+                        elif "message" in msg_json and msg_json["message"] == "insufficient data":
+                            # Handle insufficient data responses - these count as accounted inferences
+                            if "data" in msg_json:
+                                insufficient_count = len(msg_json["data"])
+                                accounted_inferences += insufficient_count
+                                print(f"{batch_prefix}Received insufficient data for {insufficient_count} inferences. Total accounted: {accounted_inferences}/{expected_inferences}", flush=True)
+                            else:
+                                # If no data field, assume it's for one inference
+                                accounted_inferences += 1
+                                print(f"{batch_prefix}Received insufficient data response. Total accounted: {accounted_inferences}/{expected_inferences}", flush=True)
                         else:
                             # Check for throttling/error
                             if "error" in msg_json and "throttled" in msg_json["error"].lower():
                                 raise Exception("Throttling detected")
-                            print(f"Non-inference message: {msg[:1000]}...")
+                            print(f"{batch_prefix}Non-inference message: {msg[:1000]}...", flush=True)
+                        
+                        # Check if we have all inferences accounted for
+                        if accounted_inferences >= expected_inferences:
+                            inferences = list(chain(*inferences))
+                            print(f"{batch_prefix}All {expected_inferences} inferences accounted for; batch complete with {len(inferences)} successful inferences", flush=True)
+                            break
                             
                     except asyncio.TimeoutError:
                         inferences = list(chain(*inferences))
-                        print(f"Timeout after last inference; batch complete with {len(inferences)}")
+                        print(f"{batch_prefix}Timeout after {TIMEOUT_SECONDS}s since last message; batch complete with {len(inferences)} inferences ({accounted_inferences}/{expected_inferences} accounted)", flush=True)
                         break
                     
             # If we exit the with block without error, success—return
@@ -297,12 +331,12 @@ async def retrieve_batch(batch):
             # Print out detailed information about the error
             # including the stack trace if available
             if hasattr(e, 'message'):
-                print(f"Error in batch retrieval: {e.message}")
+                print(f"Error in batch retrieval: {e.message}", flush=True)
             
             # Print the stack trace if available
             if hasattr(e, '__traceback__'):
                 import traceback
-                print("Stack trace:")
+                print("Stack trace:", flush=True)
                 traceback.print_tb(e.__traceback__)
 
             retry_count += 1
@@ -331,7 +365,7 @@ def get_start_and_end_date(year):
 
 def get_inference_requests(figis, timestamps, figi_bond_info) -> List[Dict[str, Any]]:
     # Pre-filter timestamps for each FIGI
-    print("Pre-filtering timestamps based on bond settlement and maturity dates...")
+    print("Pre-filtering timestamps based on bond settlement and maturity dates...", flush=True)
     figi_timestamps = {}
     for figi in figis:
         bond_info = figi_bond_info[figi]
@@ -367,7 +401,7 @@ def get_inference_requests(figis, timestamps, figi_bond_info) -> List[Dict[str, 
         ]
     ]
 
-    print(f"Generated {len(inferences)} inference requests for {len(figis)} FIGIs and {len(timestamps)} timestamps")
+    print(f"Generated {len(inferences)} inference requests for {len(figis)} FIGIs and {len(timestamps)} timestamps", flush=True)
     
     return inferences
 
