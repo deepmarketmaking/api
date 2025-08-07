@@ -187,6 +187,28 @@ async def append_item_to_json(file_path, item):
         else:
             await f.write(b',\n' + data)
 
+async def append_batch_to_json(file_path, batch_results):
+    """Append an entire batch of results to JSON file in one operation"""
+    async with aiofiles.open(file_path, 'rb+') as f:
+        await f.seek(0, 2)
+        pos = await f.tell()
+        
+        # Build the entire batch data at once
+        batch_data = []
+        for item in batch_results:
+            indented = add_indent(json.dumps(item, indent=4))
+            batch_data.append(indented)
+        
+        # Join all items with commas and newlines
+        if pos == 1:
+            # First items in file
+            full_data = '\n' + ',\n'.join(batch_data)
+        else:
+            # Subsequent items
+            full_data = ',\n' + ',\n'.join(batch_data)
+        
+        await f.write(full_data.encode('utf-8'))
+
 async def main():
     if len(sys.argv) < 2:
         print("Usage: python new_get_timestamp_predictions.py <evaluation year> <starting batch>", flush=True)
@@ -201,7 +223,7 @@ async def main():
     figi_bond_info = figi_to_issue_date()
     inference_requests = get_inference_requests(figis, timestamps, figi_bond_info)
 
-    batch_size = int(32_000 / timestamp_count) # Because each inference request has a list of timestamps.
+    batch_size = int(128_000 / timestamp_count) # Because each inference request has a list of timestamps.
     batches = [inference_requests[i:i + batch_size] for i in range(0, len(inference_requests), batch_size)]
     print(f"Batches count: {len(batches)}", flush=True)
 
@@ -210,54 +232,43 @@ async def main():
         await f.write(b'[')
 
     lock = asyncio.Lock()
+    semaphore = asyncio.Semaphore(3)
     batch_delay = BATCH_DELAY
-    max_concurrent = 6  # Keep at 6 as you found this works well
     
     async def process_batch(idx):
         nonlocal batch_delay
-        print(f"Processing batch {idx} of {len(batches)}", flush=True)
         try:
-            batch_result = await retrieve_batch(batches[idx], idx)
-            for result in batch_result:
-                async with lock:
-                    await append_item_to_json(output_file, result)
+            print(f"Starting batch {idx} of {len(batches)}", flush=True)
+            async with semaphore:
+                print(f"Processing batch {idx} of {len(batches)}", flush=True)
+                try:
+                    batch_result = await retrieve_batch(batches[idx], idx)
+                    print(f"Batch {idx}: Retrieved {len(batch_result)} results", flush=True)
+                    # Write entire batch at once instead of individual results
+                    if batch_result:
+                        print(f"Batch {idx}: Appending {len(batch_result)} results to file...", flush=True)
+                        async with lock:
+                            await append_batch_to_json(output_file, batch_result)
+                        print(f"Batch {idx}: Finished appending to file", flush=True)
+                except Exception as e:
+                    print(f"Batch {idx} failed during processing: {e}", flush=True)
+                    # Increase delay on failure
+                    batch_delay = min(batch_delay * BACKOFF_FACTOR, MAX_BACKOFF)
+                finally:
+                    # Small delay to prevent overwhelming the server
+                    await asyncio.sleep(0.1)
+            
+            print(f"Completed batch {idx} of {len(batches)}", flush=True)
         except Exception as e:
-            print(f"Batch {idx} failed: {e}", flush=True)
-            # Increase delay on failure
-            batch_delay = min(batch_delay * BACKOFF_FACTOR, MAX_BACKOFF)
-        finally:
-            # Minimal delay to prevent overwhelming the server
-            await asyncio.sleep(max(0.5, batch_delay))
+            print(f"Batch {idx} failed completely: {e}", flush=True)
 
-    # Process batches with a queue-based approach for continuous processing
-    async def worker():
-        while True:
-            try:
-                batch_idx = await batch_queue.get()
-                if batch_idx is None:  # Sentinel to stop worker
-                    break
-                await process_batch(batch_idx)
-                batch_queue.task_done()
-            except Exception as e:
-                print(f"Worker error: {e}", flush=True)
-                batch_queue.task_done()
-
-    # Create queue and add all batch indices
-    batch_queue = asyncio.Queue()
+    # Process all batches, not just first 50
+    tasks = []
     for i in range(start_batch, len(batches)):
-        await batch_queue.put(i)
-
-    # Start worker tasks
-    workers = [asyncio.create_task(worker()) for _ in range(max_concurrent)]
+        tasks.append(asyncio.create_task(process_batch(i)))
     
     try:
-        # Wait for all batches to be processed
-        await batch_queue.join()
-        
-        # Stop workers
-        for _ in range(max_concurrent):
-            await batch_queue.put(None)
-        await asyncio.gather(*workers)
+        await asyncio.gather(*tasks)
 
     finally:
         print(f"Saving results to local file for year {year} starting batch {start_batch}", flush=True)
@@ -290,8 +301,10 @@ async def retrieve_batch(batch, batch_idx=None):
             async with websockets.connect(
                 uri,
                 max_size=10 ** 9,
-                open_timeout=1,
-                ping_timeout=None  # Detect dead connections quickly
+                open_timeout=30,  # Increased from 1 to 30 seconds
+                close_timeout=10,
+                ping_timeout=20,
+                ping_interval=10
             ) as ws:
                 print(f"{batch_prefix}Requesting batch with {len(batch)} inference requests", flush=True)
                 await ws.send(json.dumps({"inference":batch}))
