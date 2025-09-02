@@ -127,7 +127,7 @@ async def main():
     # Needed quantities
     quantities = [10_000, 100_000, 250_000, 500_000, 1_000_000]
 
-    rfq_labels = ['spread', 'price']
+    rfq_labels = ['price']
 
     # Generate all combinations
     inference_list = []
