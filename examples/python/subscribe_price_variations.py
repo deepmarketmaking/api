@@ -3,6 +3,27 @@ import json
 from sys import argv
 import time
 import itertools
+from tenacity import Retrying, stop_after_delay, wait_fixed, wait_random
+
+from authentication import create_get_id_token
+from connection import connect
+
+async def token_sender(ws, get_id_token):
+    while True:
+        await asyncio.sleep(60)
+        try:
+            await ws.send(json.dumps({'token': get_id_token()}))
+        except:
+            break
+
+async def heartbeat_sender(ws):
+    while True:
+        await asyncio.sleep(30)
+        try:
+            await ws.ping()
+        except:
+            break
+
 import httpx
 def openfigi_map_isins_to_figis(api_key, isin_list):
     # Similar to cusips_to_figis but for ISINs
@@ -142,37 +163,45 @@ async def main():
     #ws = await connect()
     # send the message to the server
     await ws.send(json.dumps(msg))
-    # keep track of the last time we sent a token to the server
-    last_token_send_time = time.time()
+
+    # Create tasks for token and heartbeat
+    token_task = asyncio.create_task(token_sender(ws, get_id_token))
+    heartbeat_task = asyncio.create_task(heartbeat_sender(ws))
 
     # Open files for writing
     with open('responses.jsonl', 'a') as response_file, open('no_inference_responses.jsonl', 'a') as no_inference_file:
         # listen for messages from the server forever
         while True:
-            # wait for a response from the server
-            response = await ws.recv()
-            # Parse the response as JSON
-            response_json = json.loads(response)
+            try:
+                # wait for a response from the server
+                response = await ws.recv()
+                # Parse the response as JSON
+                response_json = json.loads(response)
 
-            if 'inference' in response_json:
-                # Keep all percentiles
-                for item in response_json['inference']:
-                    for label in labels:
-                        if label in item:
-                            item['isin'] = figi_to_isin.get(item['figi'], 'unknown')
-                # Write to responses file
-                response_file.write(json.dumps(response_json) + '\n')
-                response_file.flush()
-            else:
-                # Write to no inference file
-                no_inference_file.write(json.dumps(response_json) + '\n')
-                no_inference_file.flush()
-
-            # periodically send an updated token to the server so our session does not expire
-            # NOTE: the server does send a response to a message with only an updated token
-            if time.time() - last_token_send_time > 60:
-                await ws.send(json.dumps({ 'token': get_id_token() }))
-                last_token_send_time = time.time()
+                if 'inference' in response_json:
+                    # Keep all percentiles
+                    for item in response_json['inference']:
+                        for label in labels:
+                            if label in item:
+                                item['isin'] = figi_to_isin.get(item['figi'], 'unknown')
+                    # Write to responses file
+                    response_file.write(json.dumps(response_json) + '\n')
+                    response_file.flush()
+                else:
+                    # Write to no inference file
+                    no_inference_file.write(json.dumps(response_json) + '\n')
+                    no_inference_file.flush()
+            except Exception as e:
+                print(f"Connection error: {e}")
+                # Cancel tasks
+                token_task.cancel()
+                heartbeat_task.cancel()
+                # Reconnect
+                ws = await connect('wss://staging1.deepmm.com')
+                await ws.send(json.dumps(msg))
+                # Recreate tasks
+                token_task = asyncio.create_task(token_sender(ws, get_id_token))
+                heartbeat_task = asyncio.create_task(heartbeat_sender(ws))
 
 
 if __name__ == '__main__':
