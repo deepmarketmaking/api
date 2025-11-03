@@ -118,6 +118,12 @@ def get_trading_days(start_date: datetime, end_date: datetime) -> List[datetime]
     Returns:
         List[datetime]: List of all trading days
     """
+    # If end_date is today or later, move it back to yesterday
+    today = datetime.now().date()
+    if end_date.date() >= today:
+        end_date = datetime.combine(today - timedelta(days=1), end_date.time())
+        print(f"Adjusted end_date to yesterday: {end_date.strftime('%Y-%m-%d')}", flush=True)
+    
     # Generate all days in the range
     delta = end_date - start_date
     all_days = [start_date + timedelta(days=i) for i in range(delta.days + 1)]
@@ -212,73 +218,119 @@ async def append_batch_to_json(file_path, batch_results):
 async def main():
     if len(sys.argv) < 2:
         print("Usage: python new_get_timestamp_predictions.py <evaluation year> <starting batch>", flush=True)
-    
-    year = int(sys.argv[1])
-    start_batch = int(sys.argv[2])
-    
-    timestamps = generate_timestamps(get_trading_days(*get_start_and_end_date(year)))
-    timestamp_count = len(timestamps)
-    print(f"Timestamp count: {timestamp_count}", flush=True)
-    figis = load_universe()
-    figi_bond_info = figi_to_issue_date()
-    inference_requests = get_inference_requests(figis, timestamps, figi_bond_info)
-
-    batch_size = int(128_000 / timestamp_count) # Because each inference request has a list of timestamps.
-    batches = [inference_requests[i:i + batch_size] for i in range(0, len(inference_requests), batch_size)]
-    print(f"Batches count: {len(batches)}", flush=True)
-
-    output_file = f"timestamp_predictions_{year}_{start_batch}.json"
-    async with aiofiles.open(output_file, 'wb') as f:
-        await f.write(b'[')
-
-    lock = asyncio.Lock()
-    semaphore = asyncio.Semaphore(3)
-    batch_delay = BATCH_DELAY
-    
-    async def process_batch(idx):
-        nonlocal batch_delay
-        try:
-            print(f"Starting batch {idx} of {len(batches)}", flush=True)
-            async with semaphore:
-                print(f"Processing batch {idx} of {len(batches)}", flush=True)
-                try:
-                    batch_result = await retrieve_batch(batches[idx], idx)
-                    print(f"Batch {idx}: Retrieved {len(batch_result)} results", flush=True)
-                    # Write entire batch at once instead of individual results
-                    if batch_result:
-                        print(f"Batch {idx}: Appending {len(batch_result)} results to file...", flush=True)
-                        async with lock:
-                            await append_batch_to_json(output_file, batch_result)
-                        print(f"Batch {idx}: Finished appending to file", flush=True)
-                except Exception as e:
-                    print(f"Batch {idx} failed during processing: {e}", flush=True)
-                    # Increase delay on failure
-                    batch_delay = min(batch_delay * BACKOFF_FACTOR, MAX_BACKOFF)
-                finally:
-                    # Small delay to prevent overwhelming the server
-                    await asyncio.sleep(0.1)
-            
-            print(f"Completed batch {idx} of {len(batches)}", flush=True)
-        except Exception as e:
-            print(f"Batch {idx} failed completely: {e}", flush=True)
-
-    # Process all batches, not just first 50
-    tasks = []
-    for i in range(start_batch, len(batches)):
-        tasks.append(asyncio.create_task(process_batch(i)))
+        return
     
     try:
-        await asyncio.gather(*tasks)
+        year = int(sys.argv[1])
+        start_batch = int(sys.argv[2])
+        
+        print(f"Starting processing for year {year}, batch {start_batch}", flush=True)
+        
+        timestamps = generate_timestamps(get_trading_days(*get_start_and_end_date(year)))
+        timestamp_count = len(timestamps)
+        print(f"Timestamp count: {timestamp_count}", flush=True)
+        figis = load_universe()
+        figi_bond_info = figi_to_issue_date()
+        inference_requests = get_inference_requests(figis, timestamps, figi_bond_info)
 
-    finally:
-        print(f"Saving results to local file for year {year} starting batch {start_batch}", flush=True)
-        async with aiofiles.open(output_file, 'ab+') as f:
-            await f.seek(0, 2)
-            pos = await f.tell()
-            if pos == 1:
-                await f.write(b']')
+        batch_size = int(128_000 / timestamp_count) # Because each inference request has a list of timestamps.
+        batches = [inference_requests[i:i + batch_size] for i in range(0, len(inference_requests), batch_size)]
+        print(f"Batches count: {len(batches)}", flush=True)
+
+        output_file = f"timestamp_predictions_{year}_{start_batch}.json"
+        try:
+            async with aiofiles.open(output_file, 'wb') as f:
+                await f.write(b'[')
+        except Exception as e:
+            print(f"Failed to create output file {output_file}: {e}", flush=True)
+            raise
+
+        lock = asyncio.Lock()
+        semaphore = asyncio.Semaphore(3)
+        batch_delay = BATCH_DELAY
+        
+        async def process_batch(idx):
+            nonlocal batch_delay
+            try:
+                print(f"Starting batch {idx} of {len(batches)}", flush=True)
+                async with semaphore:
+                    print(f"Processing batch {idx} of {len(batches)}", flush=True)
+                    try:
+                        batch_result = await retrieve_batch(batches[idx], idx)
+                        print(f"Batch {idx}: Retrieved {len(batch_result)} results", flush=True)
+                        # Write entire batch at once instead of individual results
+                        if batch_result:
+                            print(f"Batch {idx}: Appending {len(batch_result)} results to file...", flush=True)
+                            async with lock:
+                                await append_batch_to_json(output_file, batch_result)
+                            print(f"Batch {idx}: Finished appending to file", flush=True)
+                    except Exception as e:
+                        print(f"Batch {idx} failed during processing: {e}", flush=True)
+                        import traceback
+                        traceback.print_exc()
+                        # Increase delay on failure
+                        batch_delay = min(batch_delay * BACKOFF_FACTOR, MAX_BACKOFF)
+                        # Return empty list instead of crashing
+                        return []
+                    finally:
+                        # Small delay to prevent overwhelming the server
+                        await asyncio.sleep(0.1)
+                
+                print(f"Completed batch {idx} of {len(batches)}", flush=True)
+            except Exception as e:
+                print(f"Batch {idx} failed completely: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
+                return []
+
+        # Process all batches, not just first 50
+        tasks = []
+        for i in range(start_batch, len(batches)):
+            tasks.append(asyncio.create_task(process_batch(i)))
+        
+        try:
+            print(f"Starting {len(tasks)} batch tasks...", flush=True)
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Check for any exceptions in results
+            failed_batches = 0
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    print(f"Batch {start_batch + i} failed with exception: {result}", flush=True)
+                    failed_batches += 1
+            
+            if failed_batches > 0:
+                print(f"Warning: {failed_batches} out of {len(tasks)} batches failed", flush=True)
             else:
-                await f.write(b'\n]')
+                print(f"All {len(tasks)} batches completed successfully", flush=True)
+
+        except Exception as e:
+            print(f"Critical error during batch processing: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            raise
+
+        finally:
+            try:
+                print(f"Finalizing output file for year {year} starting batch {start_batch}", flush=True)
+                async with aiofiles.open(output_file, 'ab+') as f:
+                    await f.seek(0, 2)
+                    pos = await f.tell()
+                    if pos == 1:
+                        await f.write(b']')
+                    else:
+                        await f.write(b'\n]')
+                print(f"Successfully completed processing for year {year}", flush=True)
+            except Exception as e:
+                print(f"Error finalizing output file: {e}", flush=True)
+                import traceback
+                traceback.print_exc()
+                
+    except Exception as e:
+        print(f"Fatal error in main(): {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise
 
 
 async def retrieve_batch(batch, batch_idx=None):
@@ -377,7 +429,10 @@ async def retrieve_batch(batch, batch_idx=None):
 
             retry_count += 1
             if retry_count >= MAX_RETRIES:
+                print(f"{batch_prefix}Max retries ({MAX_RETRIES}) exceeded, giving up on batch", flush=True)
                 raise Exception("Max retries exceeded")
+            
+            print(f"{batch_prefix}Retry {retry_count}/{MAX_RETRIES} after error: {e}", flush=True)
             
             # Exponential backoff, cap at MAX_BACKOFF
             sleep_time = min(backoff, MAX_BACKOFF)
