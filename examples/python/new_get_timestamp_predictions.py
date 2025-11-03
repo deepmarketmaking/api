@@ -51,7 +51,7 @@ MAX_RECONNECT_BACKOFF = 600.0
 def load_universe() -> List[str]:
     """
     Load the universe of bonds from S3
-    
+
     Returns:
         List[str]: List of bond FIGIs
     """
@@ -59,18 +59,104 @@ def load_universe() -> List[str]:
         s3 = boto3.client('s3')
         response = s3.get_object(Bucket='deepmm.public', Key='universe.txt')
         content = response['Body'].read().decode('utf-8')
-        
+
         # Parse the content (assuming one FIGI per line)
         figi_strings = [line.strip() for line in content.split('\n') if line.strip()]
-        
+
         print(f"Loaded {len(figi_strings)} bonds from universe.txt", flush=True)
-        
+
         return figi_strings
     except Exception as e:
         print(f"Error loading universe from S3: {e}", flush=True)
         print("Using a small test set of FIGIs instead", flush=True)
         # Return a small test set of FIGIs
         return ["BBG003LZRTD5", "BBG00BLVJYZ2", "BBG00D3FQP27"]
+
+def load_cusip_to_figi_mapping() -> Dict[str, str]:
+    """
+    Load CUSIP to FIGI mapping from bond_data.json on S3
+
+    Returns:
+        Dict[str, str]: Dictionary mapping CUSIPs to FIGIs
+    """
+    try:
+        s3 = boto3.client('s3')
+        response = s3.get_object(Bucket='deepmm.public', Key='bond_data.json')
+        content = response['Body'].read().decode('utf-8')
+        bond_data = json.loads(content)
+
+        # Create CUSIP to FIGI mapping
+        cusip_to_figi = {bond['C']: bond['F'] for bond in bond_data}
+
+        print(f"Loaded CUSIP to FIGI mapping for {len(cusip_to_figi)} bonds", flush=True)
+
+        return cusip_to_figi
+    except Exception as e:
+        print(f"Error loading bond data from S3: {e}", flush=True)
+        return {}
+
+def load_figis_from_cusip_file(cusip_file_path: str) -> List[str]:
+    """
+    Load CUSIPs from a file and translate them to FIGIs, filtering by universe
+
+    Args:
+        cusip_file_path: Path to file containing CUSIPs (one per line)
+
+    Returns:
+        List[str]: List of bond FIGIs that are in the universe
+    """
+    # Load CUSIP to FIGI mapping
+    cusip_to_figi = load_cusip_to_figi_mapping()
+
+    if not cusip_to_figi:
+        raise Exception("Failed to load CUSIP to FIGI mapping")
+
+    # Load universe to filter against
+    print("Loading universe for filtering...", flush=True)
+    universe_figis = set(load_universe())
+    print(f"Universe contains {len(universe_figis)} FIGIs", flush=True)
+
+    # Read CUSIPs from file
+    try:
+        with open(cusip_file_path, 'r') as f:
+            cusips = [line.strip() for line in f if line.strip()]
+
+        print(f"Read {len(cusips)} CUSIPs from {cusip_file_path}", flush=True)
+
+        # Translate CUSIPs to FIGIs and filter by universe
+        figis = []
+        missing_cusips = []
+        filtered_out = []
+
+        for cusip in cusips:
+            if cusip in cusip_to_figi:
+                figi = cusip_to_figi[cusip]
+                if figi in universe_figis:
+                    figis.append(figi)
+                else:
+                    filtered_out.append((cusip, figi))
+            else:
+                missing_cusips.append(cusip)
+
+        # Report missing CUSIPs
+        if missing_cusips:
+            print(f"\nWarning: {len(missing_cusips)} CUSIPs not found in bond_data.json:", flush=True)
+            for cusip in missing_cusips:
+                print(f"  - {cusip}", flush=True)
+
+        # Report filtered out CUSIPs (not in universe)
+        if filtered_out:
+            print(f"\nFiltered out {len(filtered_out)} CUSIPs (not in universe):", flush=True)
+            for cusip, figi in filtered_out:
+                print(f"  - {cusip} (FIGI: {figi})", flush=True)
+
+        print(f"\nSuccessfully translated and filtered: {len(figis)} FIGIs in universe", flush=True)
+
+        return figis
+
+    except Exception as e:
+        print(f"Error reading CUSIP file {cusip_file_path}: {e}", flush=True)
+        raise
     
 # Returns a dictionary mapping FIGIs to objects containing issue date and maturity date
 def figi_to_issue_date() -> Dict[str, Dict[str, datetime]]:
@@ -293,6 +379,19 @@ async def main():
         help='Output file path. Can be a full file path or a directory path ending in / '
              '(default: timestamp_predictions_{YYYYMMDD}_{YYYYMMDD}_{batch}.json in current directory)'
     )
+    parser.add_argument(
+        '--request-mode',
+        type=str,
+        default='default',
+        choices=list(REQUEST_PARAMETER_MODES.keys()),
+        help='Request parameter mode: default (all 8 combinations) or minimal (price bid/offer with ats=N only)'
+    )
+    parser.add_argument(
+        '--cusips',
+        type=str,
+        default=None,
+        help='Path to file containing CUSIPs (one per line). If not specified, uses default universe from S3'
+    )
 
     args = parser.parse_args()
 
@@ -303,15 +402,24 @@ async def main():
         end_date = eastern_tz.localize(datetime.strptime(args.end_date, '%Y-%m-%d'))
         start_batch = args.start_batch
         schedule = args.schedule
+        request_mode = args.request_mode
 
-        print(f"Starting processing from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}, batch {start_batch}, schedule '{schedule}'", flush=True)
+        print(f"Starting processing from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}, batch {start_batch}, schedule '{schedule}', request mode '{request_mode}'", flush=True)
 
         timestamps = generate_timestamps(get_trading_days(start_date, end_date), schedule=schedule)
         timestamp_count = len(timestamps)
         print(f"Timestamp count: {timestamp_count}", flush=True)
-        figis = load_universe()
+
+        # Load FIGIs from CUSIP file or default universe
+        if args.cusips:
+            print(f"Loading FIGIs from CUSIP file: {args.cusips}", flush=True)
+            figis = load_figis_from_cusip_file(args.cusips)
+        else:
+            print("Loading default universe from S3", flush=True)
+            figis = load_universe()
+
         figi_bond_info = figi_to_issue_date()
-        inference_requests = get_inference_requests(figis, timestamps, figi_bond_info)
+        inference_requests = get_inference_requests(figis, timestamps, figi_bond_info, request_mode=request_mode)
 
         batch_size = int(128_000 / timestamp_count) # Because each inference request has a list of timestamps.
         batches = [inference_requests[i:i + batch_size] for i in range(0, len(inference_requests), batch_size)]
@@ -539,7 +647,66 @@ async def retrieve_batch(batch, batch_idx=None):
 
     return inferences
 
-def get_inference_requests(figis, timestamps, figi_bond_info) -> List[Dict[str, Any]]:
+def get_request_parameters_default() -> List[tuple]:
+    """
+    Get the default set of request parameter combinations
+    Returns all combinations of rfq_label, side, and ats_indicator
+
+    Returns:
+        List of (rfq_label, side, ats_indicator) tuples
+    """
+    return [
+        ("spread", "bid", "N"),
+        ("spread", "offer", "N"),
+        ("spread", "bid", "Y"),
+        ("spread", "offer", "Y"),
+        ("price", "bid", "N"),
+        ("price", "offer", "N"),
+        ("price", "bid", "Y"),
+        ("price", "offer", "Y"),
+    ]
+
+
+def get_request_parameters_minimal() -> List[tuple]:
+    """
+    Get the minimal set of request parameter combinations
+    Returns only price bid/offer with ats_indicator = N
+
+    Returns:
+        List of (rfq_label, side, ats_indicator) tuples
+    """
+    return [
+        ("price", "bid", "N"),
+        ("price", "offer", "N"),
+    ]
+
+
+# Registry of available request parameter modes
+REQUEST_PARAMETER_MODES = {
+    'default': get_request_parameters_default,
+    'minimal': get_request_parameters_minimal,
+}
+
+
+def get_inference_requests(figis, timestamps, figi_bond_info, request_mode: str = 'default') -> List[Dict[str, Any]]:
+    """
+    Generate inference requests for each FIGI and timestamp
+
+    Args:
+        figis: List of FIGI strings
+        timestamps: List of timestamps
+        figi_bond_info: Dictionary mapping FIGIs to bond information
+        request_mode: Request parameter mode ('default' or 'minimal')
+
+    Returns:
+        List of inference request dictionaries
+    """
+    if request_mode not in REQUEST_PARAMETER_MODES:
+        raise ValueError(f"Unknown request mode '{request_mode}'. Available modes: {', '.join(REQUEST_PARAMETER_MODES.keys())}")
+
+    # Get request parameters based on mode
+    request_params = REQUEST_PARAMETER_MODES[request_mode]()
+
     # Pre-filter timestamps for each FIGI
     print("Pre-filtering timestamps based on bond settlement and maturity dates...", flush=True)
     figi_timestamps = {}
@@ -552,7 +719,7 @@ def get_inference_requests(figis, timestamps, figi_bond_info) -> List[Dict[str, 
             format_timestamp_for_api(t) for t in timestamps
             if settlement_date <= t <= maturity_date
         ]
-    
+
     # Generate inference requests using pre-filtered timestamps
     inferences = [
         {
@@ -565,20 +732,11 @@ def get_inference_requests(figis, timestamps, figi_bond_info) -> List[Dict[str, 
             "subscribe": False,
         }
         for f in figis
-        for rfq_label, side, ats in [
-            ("spread", "bid", "N"),
-            ("spread", "offer", "N"),
-            ("spread", "bid", "Y"),
-            ("spread", "offer", "Y"),
-            ("price", "bid", "N"),
-            ("price", "offer", "N"),
-            ("price", "bid", "Y"),
-            ("price", "offer", "Y"),
-        ]
+        for rfq_label, side, ats in request_params
     ]
 
-    print(f"Generated {len(inferences)} inference requests for {len(figis)} FIGIs and {len(timestamps)} timestamps", flush=True)
-    
+    print(f"Generated {len(inferences)} inference requests for {len(figis)} FIGIs using '{request_mode}' mode ({len(request_params)} parameter combinations per FIGI)", flush=True)
+
     return inferences
 
 
