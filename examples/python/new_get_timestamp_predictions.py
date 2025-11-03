@@ -12,7 +12,6 @@ the model directly.
 
 from itertools import chain
 import os
-import sys
 import json
 import asyncio
 import boto3
@@ -24,6 +23,7 @@ import websockets
 from collections import Counter
 import time
 import aiofiles
+import argparse
 
 # S3 bucket for results
 S3_BUCKET = "deepmm.temp"
@@ -134,32 +134,87 @@ def get_trading_days(start_date: datetime, end_date: datetime) -> List[datetime]
     print(f"Found {len(trading_days)} trading days between {start_date.strftime('%Y-%m-%d')} and {end_date.strftime('%Y-%m-%d')}", flush=True)
     return trading_days
 
-def generate_timestamps(trading_days: List[datetime]) -> List[datetime]:
+def generate_timestamps_9am_4pm(day: datetime) -> List[datetime]:
     """
-    Generate timestamps for 9 AM and 4 PM ET on each trading day
-    
+    Generate 9 AM and 4 PM ET timestamps for a single trading day
+
+    Args:
+        day: A single trading day
+
+    Returns:
+        List[datetime]: List containing 9 AM and 4 PM timestamps
+    """
+    eastern_tz = pytz.timezone('US/Eastern')
+    day_date = day.date()
+
+    timestamps = []
+    # 9 AM ET
+    morning = eastern_tz.localize(datetime.combine(day_date, dt_time(9, 0)))
+    timestamps.append(morning)
+
+    # 4 PM ET
+    afternoon = eastern_tz.localize(datetime.combine(day_date, dt_time(16, 0)))
+    timestamps.append(afternoon)
+
+    return timestamps
+
+
+def generate_timestamps_every_30s(day: datetime) -> List[datetime]:
+    """
+    Generate timestamps every 30 seconds from 8 AM to 6 PM ET for a single trading day
+
+    Args:
+        day: A single trading day
+
+    Returns:
+        List[datetime]: List of timestamps at 30-second intervals
+    """
+    eastern_tz = pytz.timezone('US/Eastern')
+    day_date = day.date()
+
+    timestamps = []
+    # Start at 8 AM ET
+    start_time = eastern_tz.localize(datetime.combine(day_date, dt_time(8, 0)))
+    # End at 6 PM ET
+    end_time = eastern_tz.localize(datetime.combine(day_date, dt_time(18, 0)))
+
+    current_time = start_time
+    while current_time <= end_time:
+        timestamps.append(current_time)
+        current_time += timedelta(seconds=30)
+
+    return timestamps
+
+
+# Registry of available timestamp schedules
+TIMESTAMP_GENERATORS = {
+    'default': generate_timestamps_9am_4pm,
+    'high_freq': generate_timestamps_every_30s,
+}
+
+
+def generate_timestamps(trading_days: List[datetime], schedule: str = 'default') -> List[datetime]:
+    """
+    Generate timestamps for each trading day using the specified schedule
+
     Args:
         trading_days: List of trading days
-        
+        schedule: Name of the schedule to use (default, high_freq, etc.)
+
     Returns:
         List[datetime]: List of timestamps
     """
-    eastern_tz = pytz.timezone('US/Eastern')
+    if schedule not in TIMESTAMP_GENERATORS:
+        raise ValueError(f"Unknown schedule '{schedule}'. Available schedules: {', '.join(TIMESTAMP_GENERATORS.keys())}")
+
+    generator_fn = TIMESTAMP_GENERATORS[schedule]
     timestamps = []
-    
+
     for day in trading_days:
-        # Create date object from the day
-        day_date = day.date()
-        
-        # 9 AM ET
-        morning = eastern_tz.localize(datetime.combine(day_date, dt_time(9, 0)))
-        timestamps.append(morning)
-        
-        # 4 PM ET
-        afternoon = eastern_tz.localize(datetime.combine(day_date, dt_time(16, 0)))
-        timestamps.append(afternoon)
-    
-    print(f"Generated {len(timestamps)} timestamps", flush=True)
+        day_timestamps = generator_fn(day)
+        timestamps.extend(day_timestamps)
+
+    print(f"Generated {len(timestamps)} timestamps using '{schedule}' schedule", flush=True)
     return timestamps
 
 def format_timestamp_for_api(timestamp: datetime) -> str:
@@ -216,17 +271,42 @@ async def append_batch_to_json(file_path, batch_results):
         await f.write(full_data.encode('utf-8'))
 
 async def main():
-    if len(sys.argv) < 2:
-        print("Usage: python new_get_timestamp_predictions.py <evaluation year> <starting batch>", flush=True)
-        return
-    
+    parser = argparse.ArgumentParser(
+        description='Generate timestamp predictions for bond universe',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=f"Available schedules: {', '.join(TIMESTAMP_GENERATORS.keys())}"
+    )
+    parser.add_argument('start_date', type=str, help='Start date (YYYY-MM-DD)')
+    parser.add_argument('end_date', type=str, help='End date (YYYY-MM-DD)')
+    parser.add_argument('start_batch', type=int, help='Starting batch number')
+    parser.add_argument(
+        '--schedule',
+        type=str,
+        default='default',
+        choices=list(TIMESTAMP_GENERATORS.keys()),
+        help='Timestamp schedule to use (default: default)'
+    )
+    parser.add_argument(
+        '--output',
+        type=str,
+        default=None,
+        help='Output file path. Can be a full file path or a directory path ending in / '
+             '(default: timestamp_predictions_{YYYYMMDD}_{YYYYMMDD}_{batch}.json in current directory)'
+    )
+
+    args = parser.parse_args()
+
     try:
-        year = int(sys.argv[1])
-        start_batch = int(sys.argv[2])
-        
-        print(f"Starting processing for year {year}, batch {start_batch}", flush=True)
-        
-        timestamps = generate_timestamps(get_trading_days(*get_start_and_end_date(year)))
+        # Parse dates
+        eastern_tz = pytz.timezone('US/Eastern')
+        start_date = eastern_tz.localize(datetime.strptime(args.start_date, '%Y-%m-%d'))
+        end_date = eastern_tz.localize(datetime.strptime(args.end_date, '%Y-%m-%d'))
+        start_batch = args.start_batch
+        schedule = args.schedule
+
+        print(f"Starting processing from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}, batch {start_batch}, schedule '{schedule}'", flush=True)
+
+        timestamps = generate_timestamps(get_trading_days(start_date, end_date), schedule=schedule)
         timestamp_count = len(timestamps)
         print(f"Timestamp count: {timestamp_count}", flush=True)
         figis = load_universe()
@@ -237,7 +317,20 @@ async def main():
         batches = [inference_requests[i:i + batch_size] for i in range(0, len(inference_requests), batch_size)]
         print(f"Batches count: {len(batches)}", flush=True)
 
-        output_file = f"timestamp_predictions_{year}_{start_batch}.json"
+        # Determine output file path
+        date_range = f"{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
+        default_filename = f"timestamp_predictions_{date_range}_{start_batch}.json"
+
+        if args.output:
+            # Check if output path ends with / (directory specification)
+            if args.output.endswith('/'):
+                output_file = os.path.join(args.output, default_filename)
+            else:
+                output_file = args.output
+        else:
+            output_file = default_filename
+
+        print(f"Output file: {output_file}", flush=True)
         try:
             async with aiofiles.open(output_file, 'wb') as f:
                 await f.write(b'[')
@@ -312,7 +405,7 @@ async def main():
 
         finally:
             try:
-                print(f"Finalizing output file for year {year} starting batch {start_batch}", flush=True)
+                print(f"Finalizing output file {output_file} starting batch {start_batch}", flush=True)
                 async with aiofiles.open(output_file, 'ab+') as f:
                     await f.seek(0, 2)
                     pos = await f.tell()
@@ -320,7 +413,7 @@ async def main():
                         await f.write(b']')
                     else:
                         await f.write(b'\n]')
-                print(f"Successfully completed processing for year {year}", flush=True)
+                print(f"Successfully completed processing. Output written to {output_file}", flush=True)
             except Exception as e:
                 print(f"Error finalizing output file: {e}", flush=True)
                 import traceback
@@ -445,14 +538,6 @@ async def retrieve_batch(batch, batch_idx=None):
                 await asyncio.sleep(recon_backoff)
 
     return inferences
-
-    
-
-def get_start_and_end_date(year):
-    start_date = datetime(year = year, month = 1, day = 1)
-    end_date = datetime(year=year, month = 12, day = 31)
-    end_date = min(end_date, datetime.now())
-    return start_date,end_date
 
 def get_inference_requests(figis, timestamps, figi_bond_info) -> List[Dict[str, Any]]:
     # Pre-filter timestamps for each FIGI
