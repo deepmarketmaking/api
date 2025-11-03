@@ -1,6 +1,9 @@
-websockets
 boto3
 httpx
-tenacity
+matplotlib
+numpy
 pyarrow
 aiofiles
+scipy
+tenacity
+websockets
