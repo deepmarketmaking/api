@@ -24,6 +24,10 @@ from collections import Counter
 import time
 import aiofiles
 import argparse
+from pathlib import Path
+
+from authentication import create_get_id_token
+from connection import connect
 
 # S3 bucket for results
 S3_BUCKET = "deepmm.temp"
@@ -48,13 +52,30 @@ MAX_RECONNECT_ATTEMPTS = 20
 RECONNECT_BACKOFF = 3.0
 MAX_RECONNECT_BACKOFF = 600.0
 
-def load_universe() -> List[str]:
+def load_universe(historical_bonds_file: Optional[str] = None) -> List[str]:
     """
-    Load the universe of bonds from S3
+    Load the universe of bonds from S3 or a local historical bonds file
+
+    Args:
+        historical_bonds_file: Optional path to local historical bonds JSON file.
+                              If provided, loads FIGIs from this file instead of S3.
 
     Returns:
         List[str]: List of bond FIGIs
     """
+    if historical_bonds_file:
+        try:
+            print(f"Loading universe from historical bonds file: {historical_bonds_file}", flush=True)
+            with open(historical_bonds_file, 'r') as f:
+                bond_data = json.load(f)
+
+            figi_strings = [bond['F'] for bond in bond_data]
+            print(f"Loaded {len(figi_strings)} bonds from {historical_bonds_file}", flush=True)
+            return figi_strings
+        except Exception as e:
+            print(f"Error loading universe from {historical_bonds_file}: {e}", flush=True)
+            raise
+
     try:
         s3 = boto3.client('s3')
         response = s3.get_object(Bucket='deepmm.public', Key='universe.txt')
@@ -72,13 +93,30 @@ def load_universe() -> List[str]:
         # Return a small test set of FIGIs
         return ["BBG003LZRTD5", "BBG00BLVJYZ2", "BBG00D3FQP27"]
 
-def load_cusip_to_figi_mapping() -> Dict[str, str]:
+def load_cusip_to_figi_mapping(historical_bonds_file: Optional[str] = None) -> Dict[str, str]:
     """
-    Load CUSIP to FIGI mapping from bond_data.json on S3
+    Load CUSIP to FIGI mapping from bond_data.json on S3 or a local historical bonds file
+
+    Args:
+        historical_bonds_file: Optional path to local historical bonds JSON file.
+                              If provided, loads mapping from this file instead of S3.
 
     Returns:
         Dict[str, str]: Dictionary mapping CUSIPs to FIGIs
     """
+    if historical_bonds_file:
+        try:
+            print(f"Loading CUSIP to FIGI mapping from historical bonds file: {historical_bonds_file}", flush=True)
+            with open(historical_bonds_file, 'r') as f:
+                bond_data = json.load(f)
+
+            cusip_to_figi = {bond['C']: bond['F'] for bond in bond_data}
+            print(f"Loaded CUSIP to FIGI mapping for {len(cusip_to_figi)} bonds", flush=True)
+            return cusip_to_figi
+        except Exception as e:
+            print(f"Error loading bond data from {historical_bonds_file}: {e}", flush=True)
+            return {}
+
     try:
         s3 = boto3.client('s3')
         response = s3.get_object(Bucket='deepmm.public', Key='bond_data.json')
@@ -95,25 +133,26 @@ def load_cusip_to_figi_mapping() -> Dict[str, str]:
         print(f"Error loading bond data from S3: {e}", flush=True)
         return {}
 
-def load_figis_from_cusip_file(cusip_file_path: str) -> List[str]:
+def load_figis_from_cusip_file(cusip_file_path: str, historical_bonds_file: Optional[str] = None) -> List[str]:
     """
     Load CUSIPs from a file and translate them to FIGIs, filtering by universe
 
     Args:
         cusip_file_path: Path to file containing CUSIPs (one per line)
+        historical_bonds_file: Optional path to local historical bonds JSON file
 
     Returns:
         List[str]: List of bond FIGIs that are in the universe
     """
     # Load CUSIP to FIGI mapping
-    cusip_to_figi = load_cusip_to_figi_mapping()
+    cusip_to_figi = load_cusip_to_figi_mapping(historical_bonds_file)
 
     if not cusip_to_figi:
         raise Exception("Failed to load CUSIP to FIGI mapping")
 
     # Load universe to filter against
     print("Loading universe for filtering...", flush=True)
-    universe_figis = set(load_universe())
+    universe_figis = set(load_universe(historical_bonds_file))
     print(f"Universe contains {len(universe_figis)} FIGIs", flush=True)
 
     # Read CUSIPs from file
@@ -157,37 +196,202 @@ def load_figis_from_cusip_file(cusip_file_path: str) -> List[str]:
     except Exception as e:
         print(f"Error reading CUSIP file {cusip_file_path}: {e}", flush=True)
         raise
+
+def load_ticker_to_figis_mapping(historical_bonds_file: Optional[str] = None) -> Dict[str, List[str]]:
+    """
+    Load bond data from S3 or a local historical bonds file and create a mapping from issuer ticker to list of FIGIs
+
+    Args:
+        historical_bonds_file: Optional path to local historical bonds JSON file.
+                              If provided, loads mapping from this file instead of S3.
+
+    Returns:
+        Dict[str, List[str]]: Dictionary mapping issuer tickers to lists of FIGIs
+    """
+    if historical_bonds_file:
+        try:
+            print(f"Loading ticker to FIGI mapping from historical bonds file: {historical_bonds_file}", flush=True)
+            with open(historical_bonds_file, 'r') as f:
+                bond_data = json.load(f)
+
+            ticker_to_figis = {}
+            for bond in bond_data:
+                ticker = bond['t']
+                figi = bond['F']
+                if ticker not in ticker_to_figis:
+                    ticker_to_figis[ticker] = []
+                ticker_to_figis[ticker].append(figi)
+
+            print(f"Loaded ticker to FIGI mapping for {len(ticker_to_figis)} unique tickers", flush=True)
+            return ticker_to_figis
+        except Exception as e:
+            print(f"Error loading bond data from {historical_bonds_file}: {e}", flush=True)
+            return {}
+
+    try:
+        s3 = boto3.client('s3')
+        response = s3.get_object(Bucket='deepmm.public', Key='bond_data.json')
+        content = response['Body'].read().decode('utf-8')
+        bond_data = json.loads(content)
+
+        # Create ticker to FIGIs mapping
+        ticker_to_figis = {}
+        for bond in bond_data:
+            ticker = bond['t']
+            figi = bond['F']
+            if ticker not in ticker_to_figis:
+                ticker_to_figis[ticker] = []
+            ticker_to_figis[ticker].append(figi)
+
+        print(f"Loaded ticker to FIGI mapping for {len(ticker_to_figis)} unique tickers", flush=True)
+
+        return ticker_to_figis
+    except Exception as e:
+        print(f"Error loading bond data from S3: {e}", flush=True)
+        return {}
+
+def load_date_ticker_csv(csv_file_path: str, historical_bonds_file: Optional[str] = None) -> Dict[datetime, List[str]]:
+    """
+    Load a CSV file with date-ticker pairs and return a mapping of dates to FIGIs
+
+    CSV format: First column is date (YYYY-MM-DD), second column is issuer ticker
+    Columns are separated by tabs
+
+    Args:
+        csv_file_path: Path to CSV file
+        historical_bonds_file: Optional path to local historical bonds JSON file
+
+    Returns:
+        Dict[datetime, List[str]]: Dictionary mapping dates to lists of FIGIs for that date
+    """
+    # Load ticker to FIGIs mapping
+    ticker_to_figis = load_ticker_to_figis_mapping(historical_bonds_file)
+
+    if not ticker_to_figis:
+        raise Exception("Failed to load ticker to FIGI mapping")
+
+    # Load universe to filter against
+    print("Loading universe for filtering...", flush=True)
+    universe_figis = set(load_universe(historical_bonds_file))
+    print(f"Universe contains {len(universe_figis)} FIGIs", flush=True)
+
+    eastern_tz = pytz.timezone('US/Eastern')
+    date_to_figis = {}
+    missing_tickers = set()
+    filtered_out_count = 0
+
+    try:
+        with open(csv_file_path, 'r') as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+
+                # Split by tab
+                parts = line.split('\t')
+                if len(parts) != 2:
+                    print(f"Warning: Line {line_num} does not have exactly 2 tab-separated columns: {line}", flush=True)
+                    continue
+
+                date_str, ticker = parts[0].strip(), parts[1].strip()
+
+                # Parse date
+                try:
+                    trade_date = eastern_tz.localize(datetime.strptime(date_str, '%Y-%m-%d'))
+                except ValueError as e:
+                    print(f"Warning: Line {line_num} has invalid date format '{date_str}': {e}", flush=True)
+                    continue
+
+                # Get FIGIs for this ticker
+                if ticker not in ticker_to_figis:
+                    missing_tickers.add(ticker)
+                    continue
+
+                # Filter FIGIs by universe
+                figis_for_ticker = [figi for figi in ticker_to_figis[ticker] if figi in universe_figis]
+                filtered_out_count += len(ticker_to_figis[ticker]) - len(figis_for_ticker)
+
+                if not figis_for_ticker:
+                    print(f"Warning: Ticker '{ticker}' on {date_str} has no FIGIs in universe", flush=True)
+                    continue
+
+                # Add to date mapping
+                if trade_date not in date_to_figis:
+                    date_to_figis[trade_date] = []
+                date_to_figis[trade_date].extend(figis_for_ticker)
+
+        # Report statistics
+        if missing_tickers:
+            print(f"\nWarning: {len(missing_tickers)} tickers not found in bond_data.json:", flush=True)
+            for ticker in sorted(missing_tickers):
+                print(f"  - {ticker}", flush=True)
+
+        if filtered_out_count > 0:
+            print(f"\nFiltered out {filtered_out_count} FIGIs (not in universe)", flush=True)
+
+        total_figis = sum(len(figis) for figis in date_to_figis.values())
+        print(f"\nSuccessfully loaded {len(date_to_figis)} dates with {total_figis} total FIGI-date pairs", flush=True)
+
+        return date_to_figis
+
+    except Exception as e:
+        print(f"Error reading CSV file {csv_file_path}: {e}", flush=True)
+        raise
     
 # Returns a dictionary mapping FIGIs to objects containing issue date and maturity date
-def figi_to_issue_date() -> Dict[str, Dict[str, datetime]]:
+def figi_to_issue_date(historical_bonds_file: Optional[str] = None) -> Dict[str, Dict[str, datetime]]:
     """
-    Load bond data from S3 and create a mapping from FIGI to bond information.
-    
+    Load bond data from S3 or a local historical bonds file and create a mapping from FIGI to bond information.
+
+    Args:
+        historical_bonds_file: Optional path to local historical bonds JSON file.
+                              If provided, loads bond info from this file instead of S3.
+
     Returns:
         Dict[str, Dict[str, datetime]]: A dictionary mapping FIGI to an object containing
-        'issue_date' and 'maturity_date' as datetime objects.
+        'settlement_date' and 'maturity_date' as datetime objects.
     """
+    eastern_tz = pytz.timezone('US/Eastern')
+
+    if historical_bonds_file:
+        try:
+            print(f"Loading bond information from historical bonds file: {historical_bonds_file}", flush=True)
+            with open(historical_bonds_file, 'r') as f:
+                bond_data = json.load(f)
+
+            figi_bond_info = {}
+            for bond in bond_data:
+                bond_info = {}
+                bond_info['settlement_date'] = eastern_tz.localize(datetime.strptime(bond['s'], '%Y-%m-%d'))
+                bond_info['maturity_date'] = eastern_tz.localize(datetime.strptime(bond['m'], '%Y-%m-%d'))
+                figi_bond_info[bond['F']] = bond_info
+
+            print(f"Loaded bond information for {len(figi_bond_info)} bonds", flush=True)
+            return figi_bond_info
+        except Exception as e:
+            print(f"Error loading bond data from {historical_bonds_file}: {e}", flush=True)
+            return {}
+
     # Download bond data from S3
     try:
         s3 = boto3.client('s3')
         response = s3.get_object(Bucket='deepmm.public', Key='bond_data.json')
         content = response['Body'].read().decode('utf-8')
         bond_data = json.loads(content)
-        
+
         # Create a mapping of FIGIs to bond information objects
         figi_bond_info = {}
-        
-        eastern_tz = pytz.timezone('US/Eastern')
+
         for bond in bond_data:
             bond_info = {}
             bond_info['settlement_date'] = eastern_tz.localize(datetime.strptime(bond['s'], '%Y-%m-%d'))
             bond_info['maturity_date'] = eastern_tz.localize(datetime.strptime(bond['m'], '%Y-%m-%d'))
             figi_bond_info[bond['F']] = bond_info
-        
+
         print(f"Loaded bond information for {len(figi_bond_info)} bonds", flush=True)
-        
+
         return figi_bond_info
-    
+
     except Exception as e:
         print(f"Error loading bond data from S3: {e}", flush=True)
         return {}
@@ -272,10 +476,60 @@ def generate_timestamps_every_30s(day: datetime) -> List[datetime]:
     return timestamps
 
 
+def generate_timestamps_every_5min(day: datetime) -> List[datetime]:
+    """
+    Generate timestamps every 5 minutes from 8 AM to 6 PM ET for a single trading day
+
+    Args:
+        day: A single trading day
+
+    Returns:
+        List[datetime]: List of timestamps at 5-minute intervals
+    """
+    eastern_tz = pytz.timezone('US/Eastern')
+    day_date = day.date()
+
+    timestamps = []
+    # Start at 8 AM ET
+    start_time = eastern_tz.localize(datetime.combine(day_date, dt_time(8, 0)))
+    # End at 6 PM ET
+    end_time = eastern_tz.localize(datetime.combine(day_date, dt_time(18, 0)))
+
+    current_time = start_time
+    while current_time <= end_time:
+        timestamps.append(current_time)
+        current_time += timedelta(minutes=5)
+
+    return timestamps
+
+
+def generate_timestamps_eod(day: datetime) -> List[datetime]:
+    """
+    Generate 6 PM ET timestamp for a single trading day (end of day)
+
+    Args:
+        day: A single trading day
+
+    Returns:
+        List[datetime]: List containing single 6 PM timestamp
+    """
+    eastern_tz = pytz.timezone('US/Eastern')
+    day_date = day.date()
+
+    timestamps = []
+    # 6 PM ET
+    eod = eastern_tz.localize(datetime.combine(day_date, dt_time(18, 0)))
+    timestamps.append(eod)
+
+    return timestamps
+
+
 # Registry of available timestamp schedules
 TIMESTAMP_GENERATORS = {
     'default': generate_timestamps_9am_4pm,
     'high_freq': generate_timestamps_every_30s,
+    'every_5min': generate_timestamps_every_5min,
+    'eod': generate_timestamps_eod,
 }
 
 
@@ -320,41 +574,18 @@ def format_timestamp_for_api(timestamp: datetime) -> str:
     return utc_timestamp.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
 
 
-def add_indent(s, indent='    '):
-    return '\n'.join(indent + line for line in s.splitlines())
-
-async def append_item_to_json(file_path, item):
-    async with aiofiles.open(file_path, 'rb+') as f:
-        await f.seek(0, 2)
-        pos = await f.tell()
-        indented = add_indent(json.dumps(item, indent=4))
-        data = indented.encode('utf-8')
-        if pos == 1:
-            await f.write(b'\n' + data)
-        else:
-            await f.write(b',\n' + data)
-
-async def append_batch_to_json(file_path, batch_results):
-    """Append an entire batch of results to JSON file in one operation"""
-    async with aiofiles.open(file_path, 'rb+') as f:
-        await f.seek(0, 2)
-        pos = await f.tell()
-        
+async def append_batch_to_jsonl(file_path, batch_results):
+    """Append an entire batch of results to JSONL file in one operation"""
+    async with aiofiles.open(file_path, 'a') as f:
         # Build the entire batch data at once
-        batch_data = []
+        batch_lines = []
         for item in batch_results:
-            indented = add_indent(json.dumps(item, indent=4))
-            batch_data.append(indented)
-        
-        # Join all items with commas and newlines
-        if pos == 1:
-            # First items in file
-            full_data = '\n' + ',\n'.join(batch_data)
-        else:
-            # Subsequent items
-            full_data = ',\n' + ',\n'.join(batch_data)
-        
-        await f.write(full_data.encode('utf-8'))
+            # Each item is written as a single line of compact JSON
+            batch_lines.append(json.dumps(item))
+
+        # Join all items with newlines
+        full_data = '\n'.join(batch_lines) + '\n'
+        await f.write(full_data)
 
 async def main():
     parser = argparse.ArgumentParser(
@@ -362,9 +593,29 @@ async def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"Available schedules: {', '.join(TIMESTAMP_GENERATORS.keys())}"
     )
-    parser.add_argument('start_date', type=str, help='Start date (YYYY-MM-DD)')
-    parser.add_argument('end_date', type=str, help='End date (YYYY-MM-DD)')
+    parser.add_argument('username', type=str, help='Deep MM username')
+    parser.add_argument('password', type=str, help='Deep MM password')
+    parser.add_argument('start_date', type=str, nargs='?', default=None, help='Start date (YYYY-MM-DD). Not used in --date-ticker-csv mode')
+    parser.add_argument('end_date', type=str, nargs='?', default=None, help='End date (YYYY-MM-DD). Not used in --date-ticker-csv mode')
     parser.add_argument('start_batch', type=int, help='Starting batch number')
+    parser.add_argument(
+        '--region',
+        type=str,
+        default='us-east-1',
+        help='AWS region for Cognito (default: us-east-1)'
+    )
+    parser.add_argument(
+        '--client-id',
+        type=str,
+        default=None,
+        help='Cognito client ID (default: uses environment variable COGNITO_CLIENT_ID)'
+    )
+    parser.add_argument(
+        '--server',
+        type=str,
+        default=None,
+        help='Server domain name (default: wss://api.deepmm.com or DEEP_MM_SERVER environment variable)'
+    )
     parser.add_argument(
         '--schedule',
         type=str,
@@ -377,14 +628,21 @@ async def main():
         type=str,
         default=None,
         help='Output file path. Can be a full file path or a directory path ending in / '
-             '(default: timestamp_predictions_{YYYYMMDD}_{YYYYMMDD}_{batch}.json in current directory)'
+             '(default: timestamp_predictions_{YYYYMMDD}_{YYYYMMDD}_{batch}.jsonl in current directory)'
     )
     parser.add_argument(
         '--request-mode',
         type=str,
         default='default',
         choices=list(REQUEST_PARAMETER_MODES.keys()),
-        help='Request parameter mode: default (all 8 combinations) or minimal (price bid/offer with ats=N only)'
+        help='Request parameter mode: default (all 8 combinations), minimal (bid/offer with ats=N only), or full (all 8 combinations × 10 quantity levels)'
+    )
+    parser.add_argument(
+        '--request-type',
+        type=str,
+        default='price',
+        choices=['price', 'spread'],
+        help='Request type for minimal mode: price or spread (default: price). Only used with --request-mode=minimal'
     )
     parser.add_argument(
         '--cusips',
@@ -392,34 +650,106 @@ async def main():
         default=None,
         help='Path to file containing CUSIPs (one per line). If not specified, uses default universe from S3'
     )
+    parser.add_argument(
+        '--date-ticker-csv',
+        type=str,
+        default=None,
+        help='Path to CSV file with date-ticker pairs (tab-separated: YYYY-MM-DD<TAB>TICKER). '
+             'When used, collects tick data for each issuer on their respective date. '
+             'Overrides --cusips if both are specified.'
+    )
+    parser.add_argument(
+        '--historical-bonds',
+        type=str,
+        default=None,
+        help='Path to local historical bonds JSON file. When specified, uses this file instead of '
+             'bond_data.json and universe.txt from S3 for CUSIP/FIGI mappings, ticker lookups, and universe.'
+    )
 
     args = parser.parse_args()
 
+    # Get client_id from args or environment variable
+    client_id = args.client_id
+    if client_id is None:
+        client_id = os.getenv('COGNITO_CLIENT_ID')
+        if client_id is None:
+            print('Error: Cognito client ID must be provided via --client-id or COGNITO_CLIENT_ID environment variable')
+            exit(1)
+
+    # Create authentication function
+    get_id_token = create_get_id_token(args.region, client_id, args.username, args.password)
+
     try:
-        # Parse dates
         eastern_tz = pytz.timezone('US/Eastern')
-        start_date = eastern_tz.localize(datetime.strptime(args.start_date, '%Y-%m-%d'))
-        end_date = eastern_tz.localize(datetime.strptime(args.end_date, '%Y-%m-%d'))
         start_batch = args.start_batch
         schedule = args.schedule
         request_mode = args.request_mode
+        request_type = args.request_type
 
-        print(f"Starting processing from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}, batch {start_batch}, schedule '{schedule}', request mode '{request_mode}'", flush=True)
+        # Warn if request_type is specified for modes that don't use it
+        if request_type != 'price' and request_mode in ['default', 'full']:
+            print(f"Warning: --request-type is ignored for '{request_mode}' mode (both price and spread are always included)", flush=True)
 
-        timestamps = generate_timestamps(get_trading_days(start_date, end_date), schedule=schedule)
-        timestamp_count = len(timestamps)
-        print(f"Timestamp count: {timestamp_count}", flush=True)
+        # Check if using date-ticker CSV mode
+        if args.date_ticker_csv:
+            # CSV mode: dates come from the CSV file
+            if args.start_date or args.end_date:
+                print("Warning: start_date and end_date are ignored when using --date-ticker-csv mode", flush=True)
 
-        # Load FIGIs from CUSIP file or default universe
-        if args.cusips:
-            print(f"Loading FIGIs from CUSIP file: {args.cusips}", flush=True)
-            figis = load_figis_from_cusip_file(args.cusips)
+            print(f"Starting CSV mode processing, batch {start_batch}, schedule '{schedule}', request mode '{request_mode}'", flush=True)
+
+            figi_bond_info = figi_to_issue_date(args.historical_bonds)
+            date_to_figis = load_date_ticker_csv(args.date_ticker_csv, args.historical_bonds)
+
+            # Generate inference requests per date
+            inference_requests = []
+            for trade_date, figis_for_date in sorted(date_to_figis.items()):
+                # Generate timestamps for this specific date
+                day_timestamps = TIMESTAMP_GENERATORS[schedule](trade_date)
+                print(f"Date {trade_date.strftime('%Y-%m-%d')}: {len(figis_for_date)} FIGIs, {len(day_timestamps)} timestamps", flush=True)
+
+                # Generate requests for this date
+                date_requests = get_inference_requests(figis_for_date, day_timestamps, figi_bond_info, request_mode=request_mode, request_type=request_type)
+                inference_requests.extend(date_requests)
+
+            timestamp_count = sum(len(TIMESTAMP_GENERATORS[schedule](trade_date)) for trade_date in date_to_figis.keys())
+            print(f"Total timestamp count across all dates: {timestamp_count}", flush=True)
+            print(f"Total inference requests: {len(inference_requests)}", flush=True)
+
+            # Determine date range for output file naming
+            sorted_dates = sorted(date_to_figis.keys())
+            start_date = sorted_dates[0]
+            end_date = sorted_dates[-1]
         else:
-            print("Loading default universe from S3", flush=True)
-            figis = load_universe()
+            # Original mode: all FIGIs across all dates
+            # Validate required arguments
+            if not args.start_date or not args.end_date:
+                print("Error: start_date and end_date are required when not using --date-ticker-csv mode", flush=True)
+                exit(1)
 
-        figi_bond_info = figi_to_issue_date()
-        inference_requests = get_inference_requests(figis, timestamps, figi_bond_info, request_mode=request_mode)
+            # Parse dates
+            start_date = eastern_tz.localize(datetime.strptime(args.start_date, '%Y-%m-%d'))
+            end_date = eastern_tz.localize(datetime.strptime(args.end_date, '%Y-%m-%d'))
+
+            print(f"Starting processing from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}, batch {start_batch}, schedule '{schedule}', request mode '{request_mode}'", flush=True)
+
+            figi_bond_info = figi_to_issue_date(args.historical_bonds)
+            timestamps = generate_timestamps(get_trading_days(start_date, end_date), schedule=schedule)
+            timestamp_count = len(timestamps)
+            print(f"Timestamp count: {timestamp_count}", flush=True)
+
+            # Load FIGIs from CUSIP file or default universe
+            if args.cusips:
+                print(f"Loading FIGIs from CUSIP file: {args.cusips}", flush=True)
+                figis = load_figis_from_cusip_file(args.cusips, args.historical_bonds)
+            else:
+                if args.historical_bonds:
+                    print(f"Loading universe from historical bonds file: {args.historical_bonds}", flush=True)
+                else:
+                    print("Loading default universe from S3", flush=True)
+                figis = load_universe(args.historical_bonds)
+
+            inference_requests = get_inference_requests(figis, timestamps, figi_bond_info, request_mode=request_mode, request_type=request_type)
 
         batch_size = int(128_000 / timestamp_count) # Because each inference request has a list of timestamps.
         batches = [inference_requests[i:i + batch_size] for i in range(0, len(inference_requests), batch_size)]
@@ -427,7 +757,11 @@ async def main():
 
         # Determine output file path
         date_range = f"{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
-        default_filename = f"timestamp_predictions_{date_range}_{start_batch}.json"
+        # Include request_mode and request_type (if minimal mode) in filename
+        mode_suffix = f"_{request_mode}"
+        if request_mode == 'minimal':
+            mode_suffix += f"_{request_type}"
+        default_filename = f"timestamp_predictions_{date_range}{mode_suffix}_{start_batch}.jsonl"
 
         if args.output:
             # Check if output path ends with / (directory specification)
@@ -438,51 +772,86 @@ async def main():
         else:
             output_file = default_filename
 
-        print(f"Output file: {output_file}", flush=True)
+        print(f"Output file pattern: {output_file}", flush=True)
+
+        # Track inferences per file and current file index
+        MAX_INFERENCES_PER_FILE = 100_000_000
+        current_file_index = start_batch
+        inferences_in_current_file = 0
+
+        def get_output_filename(file_index):
+            """Generate output filename with file index"""
+            if args.output and not args.output.endswith('/'):
+                # User specified full path, add file index before extension
+                base = Path(args.output)
+                return str(base.parent / f"{base.stem}_{file_index}{base.suffix}")
+            else:
+                # Use default filename pattern
+                default_name = f"timestamp_predictions_{date_range}{mode_suffix}_{file_index}.jsonl"
+                if args.output and args.output.endswith('/'):
+                    return os.path.join(args.output, default_name)
+                return default_name
+
+        # Create first file
+        current_output_file = get_output_filename(current_file_index)
+        print(f"Starting with output file: {current_output_file}", flush=True)
         try:
-            async with aiofiles.open(output_file, 'wb') as f:
-                await f.write(b'[')
+            async with aiofiles.open(current_output_file, 'w') as f:
+                pass  # Just create/truncate the file
         except Exception as e:
-            print(f"Failed to create output file {output_file}: {e}", flush=True)
+            print(f"Failed to create output file {current_output_file}: {e}", flush=True)
             raise
 
         lock = asyncio.Lock()
         semaphore = asyncio.Semaphore(3)
         batch_delay = BATCH_DELAY
-        
+
         async def process_batch(idx):
-            nonlocal batch_delay
+            nonlocal batch_delay, current_file_index, inferences_in_current_file, current_output_file
             try:
                 print(f"Starting batch {idx} of {len(batches)}", flush=True)
                 async with semaphore:
                     print(f"Processing batch {idx} of {len(batches)}", flush=True)
                     try:
-                        batch_result = await retrieve_batch(batches[idx], idx)
+                        batch_result = await retrieve_batch(batches[idx], idx, get_id_token, args.server)
                         print(f"Batch {idx}: Retrieved {len(batch_result)} results", flush=True)
                         # Write entire batch at once instead of individual results
                         if batch_result:
                             print(f"Batch {idx}: Appending {len(batch_result)} results to file...", flush=True)
                             async with lock:
-                                await append_batch_to_json(output_file, batch_result)
-                            print(f"Batch {idx}: Finished appending to file", flush=True)
+                                # Check if we need to start a new file
+                                if inferences_in_current_file + len(batch_result) > MAX_INFERENCES_PER_FILE:
+                                    print(f"Reached {inferences_in_current_file:,} inferences in current file. Starting new file...", flush=True)
+                                    current_file_index += 1
+                                    inferences_in_current_file = 0
+                                    current_output_file = get_output_filename(current_file_index)
+                                    print(f"New output file: {current_output_file}", flush=True)
+                                    # Create the new file
+                                    async with aiofiles.open(current_output_file, 'w') as f:
+                                        pass
+
+                                await append_batch_to_jsonl(current_output_file, batch_result)
+                                inferences_in_current_file += len(batch_result)
+                                print(f"Batch {idx}: Finished appending to file. Total in current file: {inferences_in_current_file:,}", flush=True)
+                        return len(batch_result) if batch_result else 0
                     except Exception as e:
                         print(f"Batch {idx} failed during processing: {e}", flush=True)
                         import traceback
                         traceback.print_exc()
                         # Increase delay on failure
                         batch_delay = min(batch_delay * BACKOFF_FACTOR, MAX_BACKOFF)
-                        # Return empty list instead of crashing
-                        return []
+                        # Return 0 instead of crashing
+                        return 0
                     finally:
                         # Small delay to prevent overwhelming the server
                         await asyncio.sleep(0.1)
-                
+
                 print(f"Completed batch {idx} of {len(batches)}", flush=True)
             except Exception as e:
                 print(f"Batch {idx} failed completely: {e}", flush=True)
                 import traceback
                 traceback.print_exc()
-                return []
+                return 0
 
         # Process all batches, not just first 50
         tasks = []
@@ -512,20 +881,15 @@ async def main():
             raise
 
         finally:
-            try:
-                print(f"Finalizing output file {output_file} starting batch {start_batch}", flush=True)
-                async with aiofiles.open(output_file, 'ab+') as f:
-                    await f.seek(0, 2)
-                    pos = await f.tell()
-                    if pos == 1:
-                        await f.write(b']')
-                    else:
-                        await f.write(b'\n]')
-                print(f"Successfully completed processing. Output written to {output_file}", flush=True)
-            except Exception as e:
-                print(f"Error finalizing output file: {e}", flush=True)
-                import traceback
-                traceback.print_exc()
+            # Report all files created
+            files_created = current_file_index - start_batch + 1
+            if files_created == 1:
+                print(f"Successfully completed processing. Output written to {current_output_file}", flush=True)
+            else:
+                print(f"Successfully completed processing. Created {files_created} output files:", flush=True)
+                for i in range(start_batch, current_file_index + 1):
+                    filename = get_output_filename(i)
+                    print(f"  - {filename}", flush=True)
                 
     except Exception as e:
         print(f"Fatal error in main(): {e}", flush=True)
@@ -534,8 +898,7 @@ async def main():
         raise
 
 
-async def retrieve_batch(batch, batch_idx=None):
-    uri = "ws://localhost:8855"
+async def retrieve_batch(batch, batch_idx=None, get_id_token=None, server=None):
     inferences = []
     retry_count = 0
     backoff = INITIAL_BACKOFF
@@ -545,22 +908,24 @@ async def retrieve_batch(batch, batch_idx=None):
     for request in batch:
         # Each request has a list of timestamps, so we expect one inference per timestamp
         expected_inferences += len(request["timestamp"])
-    
+
     batch_prefix = f"Batch {batch_idx}: " if batch_idx is not None else ""
     print(f"{batch_prefix}Expecting {expected_inferences} inferences for batch of {len(batch)} requests", flush=True)
 
     while retry_count < MAX_RETRIES:
         try:
-            async with websockets.connect(
-                uri,
-                max_size=10 ** 9,
-                open_timeout=30,  # Increased from 1 to 30 seconds
-                close_timeout=10,
-                ping_timeout=20,
-                ping_interval=10
-            ) as ws:
+            # Connect using connection.py
+            ws = await connect(server)
+
+            try:
                 print(f"{batch_prefix}Requesting batch with {len(batch)} inference requests", flush=True)
-                await ws.send(json.dumps({"inference":batch}))
+
+                # Create message with token and inference requests
+                msg = {
+                    'token': get_id_token(),
+                    'inference': batch
+                }
+                await ws.send(json.dumps(msg))
                 
                 last_message_time = time.time()
                 accounted_inferences = 0  # Track inferences received + insufficient data responses
@@ -607,14 +972,18 @@ async def retrieve_batch(batch, batch_idx=None):
                             inferences = list(chain(*inferences))
                             print(f"{batch_prefix}All {expected_inferences} inferences accounted for; batch complete with {len(inferences)} successful inferences", flush=True)
                             break
-                            
+
                     except asyncio.TimeoutError:
                         inferences = list(chain(*inferences))
                         print(f"{batch_prefix}Timeout after {TIMEOUT_SECONDS}s since last message; batch complete with {len(inferences)} inferences ({accounted_inferences}/{expected_inferences} accounted)", flush=True)
                         break
-                    
-            # If we exit the with block without error, success—return
-            return inferences
+
+                # If we exit the try block without error, success—return
+                return inferences
+
+            finally:
+                # Close the websocket connection
+                await ws.close()
 
         except (websockets.ConnectionClosed, Exception) as e:
             # Print out detailed information about the error
@@ -667,17 +1036,62 @@ def get_request_parameters_default() -> List[tuple]:
     ]
 
 
-def get_request_parameters_minimal() -> List[tuple]:
+def get_request_parameters_minimal(request_type: str = "price") -> List[tuple]:
     """
     Get the minimal set of request parameter combinations
-    Returns only price bid/offer with ats_indicator = N
+    Returns only bid/offer with ats_indicator = N for the specified request type
+
+    Args:
+        request_type: Type of request - "price" or "spread" (default: "price")
 
     Returns:
         List of (rfq_label, side, ats_indicator) tuples
     """
+    if request_type not in ["price", "spread"]:
+        raise ValueError(f"Invalid request_type '{request_type}'. Must be 'price' or 'spread'")
+
     return [
+        (request_type, "bid", "N"),
+        (request_type, "offer", "N"),
+    ]
+
+
+def get_request_parameters_full() -> List[tuple]:
+    """
+    Get the full set of request parameter combinations including quantity variations
+    Returns all combinations of rfq_label, side, ats_indicator, and quantity
+
+    Returns:
+        List of (rfq_label, side, ats_indicator, quantity) tuples
+    """
+    quantities = [
+        1_000,
+        10_000,
+        100_000,
+        250_000,
+        500_000,
+        1_000_000,
+        2_000_000,
+        3_000_000,
+        4_000_000,
+        5_000_000,
+    ]
+
+    base_params = [
+        ("spread", "bid", "N"),
+        ("spread", "offer", "N"),
+        ("spread", "bid", "Y"),
+        ("spread", "offer", "Y"),
         ("price", "bid", "N"),
         ("price", "offer", "N"),
+        ("price", "bid", "Y"),
+        ("price", "offer", "Y"),
+    ]
+
+    return [
+        (rfq_label, side, ats, quantity)
+        for rfq_label, side, ats in base_params
+        for quantity in quantities
     ]
 
 
@@ -685,10 +1099,11 @@ def get_request_parameters_minimal() -> List[tuple]:
 REQUEST_PARAMETER_MODES = {
     'default': get_request_parameters_default,
     'minimal': get_request_parameters_minimal,
+    'full': get_request_parameters_full,
 }
 
 
-def get_inference_requests(figis, timestamps, figi_bond_info, request_mode: str = 'default') -> List[Dict[str, Any]]:
+def get_inference_requests(figis, timestamps, figi_bond_info, request_mode: str = 'default', request_type: str = 'price') -> List[Dict[str, Any]]:
     """
     Generate inference requests for each FIGI and timestamp
 
@@ -697,6 +1112,7 @@ def get_inference_requests(figis, timestamps, figi_bond_info, request_mode: str 
         timestamps: List of timestamps
         figi_bond_info: Dictionary mapping FIGIs to bond information
         request_mode: Request parameter mode ('default' or 'minimal')
+        request_type: Request type ('price' or 'spread') - only used with 'minimal' mode
 
     Returns:
         List of inference request dictionaries
@@ -705,11 +1121,18 @@ def get_inference_requests(figis, timestamps, figi_bond_info, request_mode: str 
         raise ValueError(f"Unknown request mode '{request_mode}'. Available modes: {', '.join(REQUEST_PARAMETER_MODES.keys())}")
 
     # Get request parameters based on mode
-    request_params = REQUEST_PARAMETER_MODES[request_mode]()
+    if request_mode == 'minimal':
+        request_params = REQUEST_PARAMETER_MODES[request_mode](request_type)
+    else:
+        request_params = REQUEST_PARAMETER_MODES[request_mode]()
 
     # Pre-filter timestamps for each FIGI
     print("Pre-filtering timestamps based on bond settlement and maturity dates...", flush=True)
     figi_timestamps = {}
+    total_timestamps_before = len(figis) * len(timestamps)
+    total_timestamps_after = 0
+    filtered_out_figis = []
+
     for figi in figis:
         bond_info = figi_bond_info[figi]
         settlement_date = bond_info['settlement_date']
@@ -719,21 +1142,53 @@ def get_inference_requests(figis, timestamps, figi_bond_info, request_mode: str 
             format_timestamp_for_api(t) for t in timestamps
             if settlement_date <= t <= maturity_date
         ]
+        total_timestamps_after += len(figi_timestamps[figi])
+
+        # Track FIGIs with no valid timestamps
+        if len(figi_timestamps[figi]) == 0:
+            filtered_out_figis.append((figi, settlement_date.strftime('%Y-%m-%d'), maturity_date.strftime('%Y-%m-%d')))
+
+    if filtered_out_figis:
+        print(f"Warning: {len(filtered_out_figis)} FIGIs have no valid timestamps (timestamps outside settlement/maturity range):", flush=True)
+        for figi, settle, mature in filtered_out_figis[:10]:  # Show first 10
+            print(f"  - {figi}: settlement={settle}, maturity={mature}", flush=True)
+        if len(filtered_out_figis) > 10:
+            print(f"  ... and {len(filtered_out_figis) - 10} more", flush=True)
+
+    print(f"Timestamp filtering: {total_timestamps_before} -> {total_timestamps_after} timestamps ({total_timestamps_after}/{total_timestamps_before} kept)", flush=True)
 
     # Generate inference requests using pre-filtered timestamps
-    inferences = [
-        {
-            "rfq_label": rfq_label,
-            "figi": f,
-            "quantity": 1_000_000,
-            "side": side,
-            "ats_indicator": ats,
-            "timestamp": figi_timestamps[f],  # Use pre-filtered timestamps
-            "subscribe": False,
-        }
-        for f in figis
-        for rfq_label, side, ats in request_params
-    ]
+    # Check if request_params includes quantity (4-tuples) or not (3-tuples)
+    if request_params and len(request_params[0]) == 4:
+        # Full mode: includes quantity in the parameters
+        inferences = [
+            {
+                "rfq_label": rfq_label,
+                "figi": f,
+                "quantity": quantity,
+                "side": side,
+                "ats_indicator": ats,
+                "timestamp": figi_timestamps[f],  # Use pre-filtered timestamps
+                "subscribe": False,
+            }
+            for f in figis
+            for rfq_label, side, ats, quantity in request_params
+        ]
+    else:
+        # Default/minimal modes: use fixed quantity of 1_000_000
+        inferences = [
+            {
+                "rfq_label": rfq_label,
+                "figi": f,
+                "quantity": 1_000_000,
+                "side": side,
+                "ats_indicator": ats,
+                "timestamp": figi_timestamps[f],  # Use pre-filtered timestamps
+                "subscribe": False,
+            }
+            for f in figis
+            for rfq_label, side, ats in request_params
+        ]
 
     print(f"Generated {len(inferences)} inference requests for {len(figis)} FIGIs using '{request_mode}' mode ({len(request_params)} parameter combinations per FIGI)", flush=True)
 

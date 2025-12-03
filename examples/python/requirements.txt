@@ -7,3 +7,7 @@ aiofiles
 scipy
 tenacity
 websockets
+ijson
+ujson
+aiofiles
+

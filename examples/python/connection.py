@@ -10,7 +10,7 @@ async def connect(server=None):
     if server is None:
         server = os.getenv('DEEP_MM_SERVER', DEFAULT_SERVER)
     # Create a WebSocket connection
-    open_timeout = 1
+    open_timeout = 5
     sleep_time = 0
     while True:
         try:
@@ -21,7 +21,8 @@ async def connect(server=None):
                                           ping_timeout=None)
             print(f"Successful connection to {server}")
             return ws
-        except BaseException:
+        except BaseException as e:
+            print(e.msg)
             print(f"Unsuccessful connection to {server}")
             await asyncio.sleep(sleep_time)
             open_timeout = min(60, open_timeout + 1)
