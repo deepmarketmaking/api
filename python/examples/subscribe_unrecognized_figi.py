@@ -3,8 +3,7 @@ import json
 from sys import argv
 import time
 
-from authentication import create_get_id_token
-from connection import connect
+from axor import create_get_id_token, connect
 
 async def main():
 

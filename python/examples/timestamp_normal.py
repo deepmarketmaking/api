@@ -2,10 +2,7 @@ import asyncio
 import json
 from sys import argv
 
-from authentication import create_get_id_token
-from connection import connect
-from cusips_to_figis import openfigi_map_cusips_to_figis
-from fit_normal_distribution import fit_normal_distribution
+from axor import create_get_id_token, connect, openfigi_map_cusips_to_figis, fit_normal_distribution
 from scipy.stats import norm
 
 
