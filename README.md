@@ -1,5 +1,10 @@
 # Deep MM API for Real-time and Historical Pricing
 
+## SDKs and Client Libraries
+
+- **[Python SDK](python/)** - Install via pip: `pip install axor-api`
+- **[Node.js Examples](nodejs/examples/)** - Example code for Node.js integration
+
 ## Introduction
 
 Our (currently US Only) Corporate Credit AI pricing engine is able [to infer](https://www.cloudflare.com/learning/ai/inference-vs-training/#:~:text=In%20the%20field%20of%20artificial,examples%20of%20the%20desired%20result.) the probability distribution of hypothetical trades on the secondary market [conditioned on](https://en.wikipedia.org/wiki/Conditional_probability) properties of the trade knowable before the trade, and also conditioned on a trade occuring at the specified point in time:
@@ -15,50 +20,93 @@ You can also specify whether you want to subscribe to the inference. If you subs
 
 The output of the model currently is the inferred 5th through the 95th percentiles of the label specified (5th being the lowest value and 95th being the highest). The percentiles are a table of select values in the AI-estimated [cumulative distribution function](https://en.wikipedia.org/wiki/Cumulative_distribution_function) of the label values. We do have plans to modify our API in the future to enable more percentiles, particularly in the tails. In our web application, we use simple linear interpolation between percentiles as needed to go from a specific label value to its probability. Another option for getting the probability of a label value perhaps more precisely or further into the tails than we currently model, is to fit a distribution to the percentiles returned from the API, and then query that distribution to get the [cumulative probability](https://en.wikipedia.org/wiki/Cumulative_distribution_function) of the value.  Examples on how to do this are in the following scripts:
 
-- **[Normal Distribution](https://en.wikipedia.org/wiki/Normal_distribution)**: [examples/python/timestamp_normal.py](examples/python/timestamp_normal.py)
-- **[Johnson SU Distribution](https://en.wikipedia.org/wiki/Johnson%27s_SU-distribution)**: [examples/python/timestamp_johnson_su.py](examples/python/timestamp_johnson_su.py)
+- **[Normal Distribution](https://en.wikipedia.org/wiki/Normal_distribution)**: [python/examples/timestamp_normal.py](python/examples/timestamp_normal.py)
+- **[Johnson SU Distribution](https://en.wikipedia.org/wiki/Johnson%27s_SU-distribution)**: [python/examples/timestamp_johnson_su.py](python/examples/timestamp_johnson_su.py)
 
 ## Universe
 
 We don't cover all bonds yet but we are working hard to increase our coverage. You can see the list of bonds that we cover [in this file downloadable here](https://s3.us-east-1.amazonaws.com/deepmm.public/universe.txt) (it's updated every night).
 
 ## Getting Started
-To begin using the API, follow these steps:
 
-1. **Install Dependencies**: Install the necessary dependencies listed in requirements.txt by running:
+### Python
 
-   ```bash
-   pip install -r requirements.txt
-   ```
-   The main libraries used are:
+Install the Python SDK:
 
-   - `websockets`: For WebSocket communication.
-   - `httpx`: For HTTP requests to the FIGI webservice to translate your cusips to figis(optional, depending on your implementation).
-   - `tenacity`: For handling retries with resilience.
-   - `pyarrow`: For efficient data handling.
+```bash
+pip install axor-api
+```
 
-2. **Authentication**
+Quick start example:
 
-   - `Deep MM Websocket Authentication`:
-      - You will need a currently active Deep MM username and password for API access
-      - We use the standard AWS client (called boto3 in python) to connect to Cognito and obtain the IdToken that we have to send on the WebSocket connection once established
-      - We have also included [example code in this repository](examples/python/authentication.py) on how to authenticate and obtain the Cognito IdToken used to authenticate once connected to the WebSocket server
-      - Once you have the IdToken from Cognito, you just send it to the Websocket server once the connection is established
-      - An updated token must be sent to the WebSocket server periodically in order to keep the session from expiring
-      - You can have up to five connections opened simultaneously, but in order to open more than one connection you must use the same Cognito IdToken for all of them
-      - You can use a new IdToken to establish a new connection, but all previous connections for the same user will be disconnected
-   - `OpenFIGI Authentication`: If you want to make use of the [OpenFIGI api](https://www.openfigi.com/api) to convert your list of CUSIPs over to FIGIs as shown in some of the examples in this repository, you will need [to register](https://www.openfigi.com/user/signup) (for free) and obtain an OpenFIGI API key for your organization.
+```python
+import asyncio
+import json
+from axor import connect, create_get_id_token
 
-3. **API Server Connection Settings**:
-   Use a WebSocket client to connect to the WebSocket Server. We recommend the Python `websockets` library. See the examples in the repository for more details.
-   - Use the following settings to connect:
-      - WebSocket server: `wss://api.deepmm.com`
-      - AWS Region: `us-east-1`
-      - Cognito Client ID:
-        - While testing use `2so174j2e4fsg1m28kc9id3hgk`
-        - For production deployments contact us for a dedicated Cognito Client ID
+async def main():
+    # Authenticate
+    get_id_token = create_get_id_token(
+        region="us-east-1",
+        client_id="2so174j2e4fsg1m28kc9id3hgk",  # Test client ID
+        username="your-username",
+        password="your-password"
+    )
 
-4. **Batching**: When submitting requests to the websocket server for historical inferences, it's important to batch them into as large as possible messages (while staying under the throttling limits). Our server has much better throughput for historical inferences with large rather than small batches. If you run into websocket client message size limits, here's an example of how to set up the connection with larger limits:
+    # Connect
+    ws = await connect()
+
+    # Subscribe to pricing
+    await ws.send(json.dumps({
+        'token': get_id_token(),
+        'inference': [{
+            'rfq_label': 'spread',
+            'figi': 'BBG003LZRTD5',
+            'quantity': 1_000_000,
+            'side': 'bid',
+            'subscribe': True,
+        }]
+    }))
+
+    # Receive updates
+    while True:
+        response = await ws.recv()
+        print(response)
+
+asyncio.run(main())
+```
+
+See the [Python SDK documentation](python/) and [examples](python/examples/) for more details.
+
+### Node.js
+
+See the [Node.js examples](nodejs/examples/) for integration examples.
+
+## API Details
+
+### Authentication
+
+- **Deep MM WebSocket Authentication**:
+  - You will need a currently active Deep MM username and password for API access
+  - We use the standard AWS client (called boto3 in Python) to connect to Cognito and obtain the IdToken that we have to send on the WebSocket connection once established
+  - Once you have the IdToken from Cognito, you just send it to the WebSocket server once the connection is established
+  - An updated token must be sent to the WebSocket server periodically in order to keep the session from expiring
+  - You can have up to five connections opened simultaneously, but in order to open more than one connection you must use the same Cognito IdToken for all of them
+  - You can use a new IdToken to establish a new connection, but all previous connections for the same user will be disconnected
+
+- **OpenFIGI Authentication**: If you want to make use of the [OpenFIGI API](https://www.openfigi.com/api) to convert your list of CUSIPs over to FIGIs as shown in some of the examples in this repository, you will need [to register](https://www.openfigi.com/user/signup) (for free) and obtain an OpenFIGI API key for your organization.
+
+### API Server Connection Settings
+
+- WebSocket server: `wss://api.deepmm.com`
+- AWS Region: `us-east-1`
+- Cognito Client ID:
+  - While testing use `2so174j2e4fsg1m28kc9id3hgk`
+  - For production deployments contact us for a dedicated Cognito Client ID
+
+### Batching
+
+When submitting requests to the websocket server for historical inferences, it's important to batch them into as large as possible messages (while staying under the throttling limits). Our server has much better throughput for historical inferences with large rather than small batches. If you run into websocket client message size limits, here's an example of how to set up the connection with larger limits:
 
    ```python
     import websockets
@@ -69,9 +117,11 @@ To begin using the API, follow these steps:
                                   ping_timeout=None)
    ```
 
-   It's also generally a good idea to submit subscription requests in larger batches, but it's not quite as important because the subscriptions for your connection are eventually consolidated into a single list automatically on the server side. 
+It's also generally a good idea to submit subscription requests in larger batches, but it's not quite as important because the subscriptions for your connection are eventually consolidated into a single list automatically on the server side.
 
-6. **Throttling**: At the time of this writing each customer can subscribe to up 32,000 simultaneous subscriptions, or 32,000 historical timestamp requests within a 30-second window. We are working hard to increase this limit further, especially for users willing to use one of the standardized sizes (expressed here in python scalar format) (which allows us to infer once and send out to multiple users, thus decreasing the required inference load on our servers):
+### Throttling
+
+At the time of this writing each customer can subscribe to up 32,000 simultaneous subscriptions, or 32,000 historical timestamp requests within a 30-second window. We are working hard to increase this limit further, especially for users willing to use one of the standardized sizes (expressed here in Python scalar format) (which allows us to infer once and send out to multiple users, thus decreasing the required inference load on our servers):
 
    - 1,000
    - 10,000
