@@ -33,9 +33,14 @@ jobs:
         # Exit-zero treats all errors as warnings
         flake8 python/src --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-    - name: Test imports
+    - name: Test imports (without optional dependencies)
       run: |
         python -c "from axor import connect, create_get_id_token, openfigi_map_cusips_to_figis, fit_johnson_su, fit_normal_distribution"
+
+    - name: Test plotting functions (with visualization)
+      run: |
+        pip install -e python/[visualization]
+        python -c "from axor import plot_cdf_of_fitted_johnson_su_distribution, plot_pdf_of_fitted_johnson_su_distribution; print('Plotting functions available')"
 
   build:
     runs-on: ubuntu-latest
