@@ -165,7 +165,7 @@ def load_universe() -> List[str]:
         return ["BBG003LZRTD5", "BBG00BLVJYZ2", "BBG00D3FQP27"]
 
 
-async def build_historical_universe(start_date: datetime, end_date: datetime, get_id_token=None, server=None) -> List[str]:
+async def build_historical_universe(start_date: datetime, end_date: datetime, get_id_token=None, server=None) -> tuple[List[str], Optional[str]]:
     """
     Build a universe of bonds by querying the API for the first day of each month
     in the specified date range. Returns the union of all FIGIs that were valid
@@ -178,7 +178,7 @@ async def build_historical_universe(start_date: datetime, end_date: datetime, ge
         server: Server URL (optional)
 
     Returns:
-        List[str]: List of unique FIGIs that were valid during any month in the period
+        tuple[List[str], Optional[str]]: Tuple of (list of unique FIGIs, version_id used for bond_data.json)
     """
     print(f"Building historical universe for period {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}", flush=True)
 
@@ -268,7 +268,7 @@ async def build_historical_universe(start_date: datetime, end_date: datetime, ge
 
     print(f"\nHistorical universe building complete: {len(all_valid_figis)} unique FIGIs found across all months", flush=True)
 
-    return sorted(list(all_valid_figis))
+    return sorted(list(all_valid_figis)), version_id
 
 def load_cusip_to_figi_mapping() -> Dict[str, str]:
     """
@@ -467,9 +467,12 @@ def load_date_ticker_csv(csv_file_path: str) -> Dict[datetime, List[str]]:
         raise
     
 # Returns a dictionary mapping FIGIs to objects containing issue date and maturity date
-def figi_to_issue_date() -> Dict[str, Dict[str, datetime]]:
+def figi_to_issue_date(version_id: Optional[str] = None) -> Dict[str, Dict[str, datetime]]:
     """
     Load bond data from S3 and create a mapping from FIGI to bond information.
+
+    Args:
+        version_id: Optional S3 version ID to load a specific historical version
 
     Returns:
         Dict[str, Dict[str, datetime]]: A dictionary mapping FIGI to an object containing
@@ -478,7 +481,7 @@ def figi_to_issue_date() -> Dict[str, Dict[str, datetime]]:
     eastern_tz = pytz.timezone('US/Eastern')
 
     try:
-        bond_data = load_bond_data_from_s3()
+        bond_data = load_bond_data_from_s3(version_id)
 
         # Create a mapping of FIGIs to bond information objects
         figi_bond_info = {}
@@ -858,12 +861,13 @@ async def main():
 
             print(f"Starting processing from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}, batch {start_batch}, schedule '{schedule}', request mode '{request_mode}'", flush=True)
 
-            figi_bond_info = figi_to_issue_date()
             timestamps = generate_timestamps(get_trading_days(start_date, end_date), schedule=schedule)
             timestamp_count = len(timestamps)
             print(f"Timestamp count: {timestamp_count}", flush=True)
 
             # Load FIGIs from CUSIP file, historical universe, or current universe
+            # Also determine which bond_data version to use for bond info
+            bond_data_version_id = None
             if args.cusips:
                 print(f"Loading FIGIs from CUSIP file: {args.cusips}", flush=True)
                 figis = load_figis_from_cusip_file(args.cusips)
@@ -872,7 +876,10 @@ async def main():
                 figis = load_universe()
             else:
                 print("Building historical universe by querying API for each month...", flush=True)
-                figis = await build_historical_universe(start_date, end_date, get_id_token, args.server)
+                figis, bond_data_version_id = await build_historical_universe(start_date, end_date, get_id_token, args.server)
+
+            # Load bond info using the same version as the historical universe (if applicable)
+            figi_bond_info = figi_to_issue_date(bond_data_version_id)
 
             inference_requests = get_inference_requests(figis, timestamps, figi_bond_info, request_mode=request_mode, request_type=request_type)
 
