@@ -305,7 +305,7 @@ def load_universe() -> List[str]:
         return ["BBG003LZRTD5", "BBG00BLVJYZ2", "BBG00D3FQP27"]
 
 
-async def build_historical_universe(start_date: datetime, end_date: datetime, get_id_token=None, server=None) -> tuple[List[str], Optional[str]]:
+async def build_historical_universe(start_date: datetime, end_date: datetime, get_id_token=None, server=None) -> tuple[List[str], Dict[str, Dict[str, Any]]]:
     """
     Build a universe of bonds by querying the API for the first day of each month
     in the specified date range. Returns the union of all FIGIs that were valid
@@ -330,18 +330,42 @@ async def build_historical_universe(start_date: datetime, end_date: datetime, ge
         server: Server URL (optional)
 
     Returns:
-        tuple[List[str], Optional[str]]: Tuple of (list of unique FIGIs, version_id for bond info)
-        The version_id is from after the end_date (or None if using current) for most complete data.
+        tuple[List[str], Dict[str, Dict[str, Any]]]: Tuple of (list of unique FIGIs, figi_bond_info dict)
+        The figi_bond_info dict contains settlement_date and maturity_date for all FIGIs in the universe.
     """
     print(f"Building historical universe for period {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}", flush=True)
 
     # Check cache first
     cached_figis = load_cached_universe(start_date, end_date)
     if cached_figis is not None:
-        # Still need to determine the bond_info_version_id
+        # Still need to build figi_bond_info for cached FIGIs
+        # Load the union of before/after versions to ensure all FIGIs are covered
+        before_version_id = get_s3_object_version_before_date('deepmm.public', 'bond_data.json', start_date)
         after_date = end_date + timedelta(days=1)
         after_version_id = get_s3_object_version_before_date('deepmm.public', 'bond_data.json', after_date)
-        return cached_figis, after_version_id
+
+        bonds_before = load_bond_data_from_s3(before_version_id) if before_version_id else []
+        bonds_after = load_bond_data_from_s3(after_version_id) if after_version_id else load_bond_data_from_s3(None)
+
+        # Create union of bonds
+        figi_to_bond = {}
+        for bond in bonds_before:
+            figi_to_bond[bond['F']] = bond
+        for bond in bonds_after:
+            figi_to_bond[bond['F']] = bond  # Later version takes precedence
+
+        # Build figi_bond_info from the union
+        eastern_tz = pytz.timezone('US/Eastern')
+        figi_bond_info = {}
+        for figi in cached_figis:
+            if figi in figi_to_bond:
+                bond = figi_to_bond[figi]
+                figi_bond_info[figi] = {
+                    'settlement_date': eastern_tz.localize(datetime.strptime(bond['s'], '%Y-%m-%d')),
+                    'maturity_date': eastern_tz.localize(datetime.strptime(bond['m'], '%Y-%m-%d'))
+                }
+
+        return cached_figis, figi_bond_info
 
     # Get the version of bond_data.json from just before the start date
     # This captures bonds that may have matured during the period
@@ -476,8 +500,21 @@ async def build_historical_universe(start_date: datetime, end_date: datetime, ge
     figis_list = sorted(list(all_valid_figis))
     save_cached_universe(start_date, end_date, figis_list)
 
-    # Return FIGIs and version_id for bond info
-    return figis_list, bond_info_version_id
+    # Build figi_bond_info from the union of bond data
+    eastern_tz = pytz.timezone('US/Eastern')
+    figi_bond_info = {}
+    for figi in figis_list:
+        if figi in figi_to_bond:
+            bond = figi_to_bond[figi]
+            figi_bond_info[figi] = {
+                'settlement_date': eastern_tz.localize(datetime.strptime(bond['s'], '%Y-%m-%d')),
+                'maturity_date': eastern_tz.localize(datetime.strptime(bond['m'], '%Y-%m-%d'))
+            }
+        else:
+            print(f"Warning: FIGI {figi} not found in bond data versions", flush=True)
+
+    # Return FIGIs and bond info dict
+    return figis_list, figi_bond_info
 
 def load_cusip_to_figi_mapping() -> Dict[str, str]:
     """
@@ -1075,20 +1112,19 @@ async def main():
             print(f"Timestamp count: {timestamp_count}", flush=True)
 
             # Load FIGIs from CUSIP file, historical universe, or current universe
-            # Also determine which bond_data version to use for bond info
-            bond_data_version_id = None
             if args.cusips:
                 print(f"Loading FIGIs from CUSIP file: {args.cusips}", flush=True)
                 figis = load_figis_from_cusip_file(args.cusips)
+                # Load current bond info for CUSIP mode
+                figi_bond_info = figi_to_issue_date(None)
             elif args.use_current_universe:
                 print("Loading current universe from S3 universe.txt", flush=True)
                 figis = load_universe()
+                # Load current bond info for current universe mode
+                figi_bond_info = figi_to_issue_date(None)
             else:
                 print("Building historical universe by querying API for each month...", flush=True)
-                figis, bond_data_version_id = await build_historical_universe(start_date, end_date, get_id_token, args.server)
-
-            # Load bond info using the same version as the historical universe (if applicable)
-            figi_bond_info = figi_to_issue_date(bond_data_version_id)
+                figis, figi_bond_info = await build_historical_universe(start_date, end_date, get_id_token, args.server)
 
             # Try to load cached batches
             cached_batches = load_cached_batches(start_date, end_date, schedule, request_mode, request_type)
@@ -1098,7 +1134,7 @@ async def main():
                 # Generate inference requests and batches
                 inference_requests = get_inference_requests(figis, timestamps, figi_bond_info, request_mode=request_mode, request_type=request_type)
 
-                batch_size = int(128_000 / timestamp_count) # Because each inference request has a list of timestamps.
+                batch_size = int(32_000 / timestamp_count) # Because each inference request has a list of timestamps.
                 batches = [inference_requests[i:i + batch_size] for i in range(0, len(inference_requests), batch_size)]
                 print(f"Batches count: {len(batches)}", flush=True)
 
