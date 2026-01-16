@@ -52,30 +52,101 @@ MAX_RECONNECT_ATTEMPTS = 20
 RECONNECT_BACKOFF = 3.0
 MAX_RECONNECT_BACKOFF = 600.0
 
-def load_universe(historical_bonds_file: Optional[str] = None) -> List[str]:
+def get_s3_object_version_before_date(bucket: str, key: str, before_date: datetime) -> Optional[str]:
     """
-    Load the universe of bonds from S3 or a local historical bonds file
+    Get the most recent version ID of an S3 object that was created before a specified date
 
     Args:
-        historical_bonds_file: Optional path to local historical bonds JSON file.
-                              If provided, loads FIGIs from this file instead of S3.
+        bucket: S3 bucket name
+        key: S3 object key
+        before_date: Find the version before this date
+
+    Returns:
+        Optional[str]: Version ID of the most recent version before the date, or None if not found
+    """
+    try:
+        s3 = boto3.client('s3')
+        paginator = s3.get_paginator('list_object_versions')
+
+        # List all versions of the object
+        pages = paginator.paginate(Bucket=bucket, Prefix=key)
+
+        matching_versions = []
+        for page in pages:
+            if 'Versions' not in page:
+                continue
+
+            for version in page['Versions']:
+                # Only consider versions with exact key match
+                if version['Key'] != key:
+                    continue
+
+                version_date = version['LastModified']
+                # Make sure before_date is timezone-aware for comparison
+                if before_date.tzinfo is None:
+                    before_date = pytz.UTC.localize(before_date)
+
+                # Check if this version is before our target date
+                if version_date < before_date:
+                    matching_versions.append({
+                        'VersionId': version['VersionId'],
+                        'LastModified': version_date
+                    })
+
+        if not matching_versions:
+            print(f"Warning: No version of {key} found before {before_date.isoformat()}", flush=True)
+            return None
+
+        # Sort by date descending and take the most recent
+        matching_versions.sort(key=lambda x: x['LastModified'], reverse=True)
+        most_recent = matching_versions[0]
+
+        print(f"Found version of {key} from {most_recent['LastModified'].isoformat()} (before {before_date.isoformat()})", flush=True)
+        return most_recent['VersionId']
+
+    except Exception as e:
+        print(f"Error finding S3 version: {e}", flush=True)
+        return None
+
+
+def load_bond_data_from_s3(version_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Load bond data from S3, optionally from a specific version
+
+    Args:
+        version_id: Optional S3 version ID to load a specific version
+
+    Returns:
+        List[Dict[str, Any]]: List of bond data dictionaries
+    """
+    try:
+        s3 = boto3.client('s3')
+
+        if version_id:
+            print(f"Loading bond_data.json version {version_id} from S3", flush=True)
+            response = s3.get_object(Bucket='deepmm.public', Key='bond_data.json', VersionId=version_id)
+        else:
+            print("Loading current bond_data.json from S3", flush=True)
+            response = s3.get_object(Bucket='deepmm.public', Key='bond_data.json')
+
+        content = response['Body'].read().decode('utf-8')
+        bond_data = json.loads(content)
+
+        print(f"Loaded {len(bond_data)} bonds from bond_data.json", flush=True)
+        return bond_data
+
+    except Exception as e:
+        print(f"Error loading bond data from S3: {e}", flush=True)
+        raise
+
+
+def load_universe() -> List[str]:
+    """
+    Load the universe of bonds from S3 universe.txt
 
     Returns:
         List[str]: List of bond FIGIs
     """
-    if historical_bonds_file:
-        try:
-            print(f"Loading universe from historical bonds file: {historical_bonds_file}", flush=True)
-            with open(historical_bonds_file, 'r') as f:
-                bond_data = json.load(f)
-
-            figi_strings = [bond['F'] for bond in bond_data]
-            print(f"Loaded {len(figi_strings)} bonds from {historical_bonds_file}", flush=True)
-            return figi_strings
-        except Exception as e:
-            print(f"Error loading universe from {historical_bonds_file}: {e}", flush=True)
-            raise
-
     try:
         s3 = boto3.client('s3')
         response = s3.get_object(Bucket='deepmm.public', Key='universe.txt')
@@ -93,35 +164,121 @@ def load_universe(historical_bonds_file: Optional[str] = None) -> List[str]:
         # Return a small test set of FIGIs
         return ["BBG003LZRTD5", "BBG00BLVJYZ2", "BBG00D3FQP27"]
 
-def load_cusip_to_figi_mapping(historical_bonds_file: Optional[str] = None) -> Dict[str, str]:
+
+async def build_historical_universe(start_date: datetime, end_date: datetime, get_id_token=None, server=None) -> List[str]:
     """
-    Load CUSIP to FIGI mapping from bond_data.json on S3 or a local historical bonds file
+    Build a universe of bonds by querying the API for the first day of each month
+    in the specified date range. Returns the union of all FIGIs that were valid
+    during any month in the period.
 
     Args:
-        historical_bonds_file: Optional path to local historical bonds JSON file.
-                              If provided, loads mapping from this file instead of S3.
+        start_date: Start date of the period
+        end_date: End date of the period
+        get_id_token: Authentication function (optional)
+        server: Server URL (optional)
+
+    Returns:
+        List[str]: List of unique FIGIs that were valid during any month in the period
+    """
+    print(f"Building historical universe for period {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}", flush=True)
+
+    # Get the version of bond_data.json from just before the start date
+    version_id = get_s3_object_version_before_date('deepmm.public', 'bond_data.json', start_date)
+    if version_id is None:
+        print("Warning: Could not find historical bond_data.json version, using current version", flush=True)
+        version_id = None
+
+    # Load bond data
+    bond_data = load_bond_data_from_s3(version_id)
+
+    # Generate list of first days of each month in the range
+    monthly_timestamps = []
+    current = start_date.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    # Make sure current is timezone-aware (UTC)
+    if current.tzinfo is None:
+        current = pytz.UTC.localize(current)
+    else:
+        current = current.astimezone(pytz.UTC)
+
+    # Make end_date timezone-aware for comparison
+    if end_date.tzinfo is None:
+        end_date_utc = pytz.UTC.localize(end_date)
+    else:
+        end_date_utc = end_date.astimezone(pytz.UTC)
+
+    while current <= end_date_utc:
+        monthly_timestamps.append(current)
+        # Move to first day of next month
+        if current.month == 12:
+            current = current.replace(year=current.year + 1, month=1)
+        else:
+            current = current.replace(month=current.month + 1)
+
+    print(f"Generated {len(monthly_timestamps)} monthly timestamps to validate universe", flush=True)
+    for ts in monthly_timestamps:
+        print(f"  - {ts.strftime('%Y-%m-%d %H:%M:%S UTC')}", flush=True)
+
+    # Create inference request template (similar to the JS script)
+    template = {
+        'rfq_label': 'spread',
+        'quantity': 1_000_000,
+        'side': 'bid',
+        'ats_indicator': 'N',
+        'subscribe': False,
+    }
+
+    # Collect valid FIGIs across all months
+    all_valid_figis = set()
+
+    for monthly_ts in monthly_timestamps:
+        print(f"\nValidating bonds for {monthly_ts.strftime('%Y-%m-%d')}...", flush=True)
+
+        # Create inference requests for all bonds at this timestamp
+        timestamp_str = format_timestamp_for_api(monthly_ts)
+        inference_requests = [
+            {**template, 'figi': bond['F'], 'timestamp': [timestamp_str]}
+            for bond in bond_data
+        ]
+
+        print(f"Sending {len(inference_requests)} inference requests for validation...", flush=True)
+
+        # Query the API
+        try:
+            valid_inferences = await retrieve_batch(inference_requests, batch_idx=f"universe-{monthly_ts.strftime('%Y-%m')}", get_id_token=get_id_token, server=server)
+
+            # Extract FIGIs from successful responses
+            valid_figis_this_month = set()
+            for inference in valid_inferences:
+                if 'figi' in inference:
+                    valid_figis_this_month.add(inference['figi'])
+
+            print(f"Found {len(valid_figis_this_month)} valid FIGIs for {monthly_ts.strftime('%Y-%m-%d')}", flush=True)
+
+            # Add to the union
+            all_valid_figis.update(valid_figis_this_month)
+            print(f"Total unique FIGIs so far: {len(all_valid_figis)}", flush=True)
+
+        except Exception as e:
+            print(f"Error validating bonds for {monthly_ts.strftime('%Y-%m-%d')}: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            # Continue with other months even if one fails
+            continue
+
+    print(f"\nHistorical universe building complete: {len(all_valid_figis)} unique FIGIs found across all months", flush=True)
+
+    return sorted(list(all_valid_figis))
+
+def load_cusip_to_figi_mapping() -> Dict[str, str]:
+    """
+    Load CUSIP to FIGI mapping from bond_data.json on S3
 
     Returns:
         Dict[str, str]: Dictionary mapping CUSIPs to FIGIs
     """
-    if historical_bonds_file:
-        try:
-            print(f"Loading CUSIP to FIGI mapping from historical bonds file: {historical_bonds_file}", flush=True)
-            with open(historical_bonds_file, 'r') as f:
-                bond_data = json.load(f)
-
-            cusip_to_figi = {bond['C']: bond['F'] for bond in bond_data}
-            print(f"Loaded CUSIP to FIGI mapping for {len(cusip_to_figi)} bonds", flush=True)
-            return cusip_to_figi
-        except Exception as e:
-            print(f"Error loading bond data from {historical_bonds_file}: {e}", flush=True)
-            return {}
-
     try:
-        s3 = boto3.client('s3')
-        response = s3.get_object(Bucket='deepmm.public', Key='bond_data.json')
-        content = response['Body'].read().decode('utf-8')
-        bond_data = json.loads(content)
+        bond_data = load_bond_data_from_s3()
 
         # Create CUSIP to FIGI mapping
         cusip_to_figi = {bond['C']: bond['F'] for bond in bond_data}
@@ -133,26 +290,25 @@ def load_cusip_to_figi_mapping(historical_bonds_file: Optional[str] = None) -> D
         print(f"Error loading bond data from S3: {e}", flush=True)
         return {}
 
-def load_figis_from_cusip_file(cusip_file_path: str, historical_bonds_file: Optional[str] = None) -> List[str]:
+def load_figis_from_cusip_file(cusip_file_path: str) -> List[str]:
     """
     Load CUSIPs from a file and translate them to FIGIs, filtering by universe
 
     Args:
         cusip_file_path: Path to file containing CUSIPs (one per line)
-        historical_bonds_file: Optional path to local historical bonds JSON file
 
     Returns:
         List[str]: List of bond FIGIs that are in the universe
     """
     # Load CUSIP to FIGI mapping
-    cusip_to_figi = load_cusip_to_figi_mapping(historical_bonds_file)
+    cusip_to_figi = load_cusip_to_figi_mapping()
 
     if not cusip_to_figi:
         raise Exception("Failed to load CUSIP to FIGI mapping")
 
     # Load universe to filter against
     print("Loading universe for filtering...", flush=True)
-    universe_figis = set(load_universe(historical_bonds_file))
+    universe_figis = set(load_universe())
     print(f"Universe contains {len(universe_figis)} FIGIs", flush=True)
 
     # Read CUSIPs from file
@@ -197,42 +353,15 @@ def load_figis_from_cusip_file(cusip_file_path: str, historical_bonds_file: Opti
         print(f"Error reading CUSIP file {cusip_file_path}: {e}", flush=True)
         raise
 
-def load_ticker_to_figis_mapping(historical_bonds_file: Optional[str] = None) -> Dict[str, List[str]]:
+def load_ticker_to_figis_mapping() -> Dict[str, List[str]]:
     """
-    Load bond data from S3 or a local historical bonds file and create a mapping from issuer ticker to list of FIGIs
-
-    Args:
-        historical_bonds_file: Optional path to local historical bonds JSON file.
-                              If provided, loads mapping from this file instead of S3.
+    Load bond data from S3 and create a mapping from issuer ticker to list of FIGIs
 
     Returns:
         Dict[str, List[str]]: Dictionary mapping issuer tickers to lists of FIGIs
     """
-    if historical_bonds_file:
-        try:
-            print(f"Loading ticker to FIGI mapping from historical bonds file: {historical_bonds_file}", flush=True)
-            with open(historical_bonds_file, 'r') as f:
-                bond_data = json.load(f)
-
-            ticker_to_figis = {}
-            for bond in bond_data:
-                ticker = bond['t']
-                figi = bond['F']
-                if ticker not in ticker_to_figis:
-                    ticker_to_figis[ticker] = []
-                ticker_to_figis[ticker].append(figi)
-
-            print(f"Loaded ticker to FIGI mapping for {len(ticker_to_figis)} unique tickers", flush=True)
-            return ticker_to_figis
-        except Exception as e:
-            print(f"Error loading bond data from {historical_bonds_file}: {e}", flush=True)
-            return {}
-
     try:
-        s3 = boto3.client('s3')
-        response = s3.get_object(Bucket='deepmm.public', Key='bond_data.json')
-        content = response['Body'].read().decode('utf-8')
-        bond_data = json.loads(content)
+        bond_data = load_bond_data_from_s3()
 
         # Create ticker to FIGIs mapping
         ticker_to_figis = {}
@@ -250,7 +379,7 @@ def load_ticker_to_figis_mapping(historical_bonds_file: Optional[str] = None) ->
         print(f"Error loading bond data from S3: {e}", flush=True)
         return {}
 
-def load_date_ticker_csv(csv_file_path: str, historical_bonds_file: Optional[str] = None) -> Dict[datetime, List[str]]:
+def load_date_ticker_csv(csv_file_path: str) -> Dict[datetime, List[str]]:
     """
     Load a CSV file with date-ticker pairs and return a mapping of dates to FIGIs
 
@@ -259,20 +388,19 @@ def load_date_ticker_csv(csv_file_path: str, historical_bonds_file: Optional[str
 
     Args:
         csv_file_path: Path to CSV file
-        historical_bonds_file: Optional path to local historical bonds JSON file
 
     Returns:
         Dict[datetime, List[str]]: Dictionary mapping dates to lists of FIGIs for that date
     """
     # Load ticker to FIGIs mapping
-    ticker_to_figis = load_ticker_to_figis_mapping(historical_bonds_file)
+    ticker_to_figis = load_ticker_to_figis_mapping()
 
     if not ticker_to_figis:
         raise Exception("Failed to load ticker to FIGI mapping")
 
     # Load universe to filter against
     print("Loading universe for filtering...", flush=True)
-    universe_figis = set(load_universe(historical_bonds_file))
+    universe_figis = set(load_universe())
     print(f"Universe contains {len(universe_figis)} FIGIs", flush=True)
 
     eastern_tz = pytz.timezone('US/Eastern')
@@ -339,13 +467,9 @@ def load_date_ticker_csv(csv_file_path: str, historical_bonds_file: Optional[str
         raise
     
 # Returns a dictionary mapping FIGIs to objects containing issue date and maturity date
-def figi_to_issue_date(historical_bonds_file: Optional[str] = None) -> Dict[str, Dict[str, datetime]]:
+def figi_to_issue_date() -> Dict[str, Dict[str, datetime]]:
     """
-    Load bond data from S3 or a local historical bonds file and create a mapping from FIGI to bond information.
-
-    Args:
-        historical_bonds_file: Optional path to local historical bonds JSON file.
-                              If provided, loads bond info from this file instead of S3.
+    Load bond data from S3 and create a mapping from FIGI to bond information.
 
     Returns:
         Dict[str, Dict[str, datetime]]: A dictionary mapping FIGI to an object containing
@@ -353,31 +477,8 @@ def figi_to_issue_date(historical_bonds_file: Optional[str] = None) -> Dict[str,
     """
     eastern_tz = pytz.timezone('US/Eastern')
 
-    if historical_bonds_file:
-        try:
-            print(f"Loading bond information from historical bonds file: {historical_bonds_file}", flush=True)
-            with open(historical_bonds_file, 'r') as f:
-                bond_data = json.load(f)
-
-            figi_bond_info = {}
-            for bond in bond_data:
-                bond_info = {}
-                bond_info['settlement_date'] = eastern_tz.localize(datetime.strptime(bond['s'], '%Y-%m-%d'))
-                bond_info['maturity_date'] = eastern_tz.localize(datetime.strptime(bond['m'], '%Y-%m-%d'))
-                figi_bond_info[bond['F']] = bond_info
-
-            print(f"Loaded bond information for {len(figi_bond_info)} bonds", flush=True)
-            return figi_bond_info
-        except Exception as e:
-            print(f"Error loading bond data from {historical_bonds_file}: {e}", flush=True)
-            return {}
-
-    # Download bond data from S3
     try:
-        s3 = boto3.client('s3')
-        response = s3.get_object(Bucket='deepmm.public', Key='bond_data.json')
-        content = response['Body'].read().decode('utf-8')
-        bond_data = json.loads(content)
+        bond_data = load_bond_data_from_s3()
 
         # Create a mapping of FIGIs to bond information objects
         figi_bond_info = {}
@@ -593,8 +694,8 @@ async def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"Available schedules: {', '.join(TIMESTAMP_GENERATORS.keys())}"
     )
-    parser.add_argument('username', type=str, help='Deep MM username')
-    parser.add_argument('password', type=str, help='Deep MM password')
+    parser.add_argument('username', type=str, nargs='?', default=None, help='Deep MM username (not required with --no-auth)')
+    parser.add_argument('password', type=str, nargs='?', default=None, help='Deep MM password (not required with --no-auth)')
     parser.add_argument('start_date', type=str, nargs='?', default=None, help='Start date (YYYY-MM-DD). Not used in --date-ticker-csv mode')
     parser.add_argument('end_date', type=str, nargs='?', default=None, help='End date (YYYY-MM-DD). Not used in --date-ticker-csv mode')
     parser.add_argument('start_batch', type=int, help='Starting batch number')
@@ -659,25 +760,39 @@ async def main():
              'Overrides --cusips if both are specified.'
     )
     parser.add_argument(
-        '--historical-bonds',
-        type=str,
-        default=None,
-        help='Path to local historical bonds JSON file. When specified, uses this file instead of '
-             'bond_data.json and universe.txt from S3 for CUSIP/FIGI mappings, ticker lookups, and universe.'
+        '--use-current-universe',
+        action='store_true',
+        help='Use the current universe.txt from S3 instead of building a historical universe. '
+             'By default, the script builds a universe by querying the API for each month in the date range.'
+    )
+    parser.add_argument(
+        '--no-auth',
+        action='store_true',
+        help='Skip authentication (for servers with authentication disabled)'
     )
 
     args = parser.parse_args()
 
-    # Get client_id from args or environment variable
-    client_id = args.client_id
-    if client_id is None:
-        client_id = os.getenv('COGNITO_CLIENT_ID')
-        if client_id is None:
-            print('Error: Cognito client ID must be provided via --client-id or COGNITO_CLIENT_ID environment variable')
+    # Handle authentication setup
+    if args.no_auth:
+        print("Skipping authentication (--no-auth specified)", flush=True)
+        get_id_token = None
+    else:
+        # Validate that username and password are provided
+        if not args.username or not args.password:
+            print('Error: username and password are required unless --no-auth is specified')
             exit(1)
 
-    # Create authentication function
-    get_id_token = create_get_id_token(args.region, client_id, args.username, args.password)
+        # Get client_id from args or environment variable
+        client_id = args.client_id
+        if client_id is None:
+            client_id = os.getenv('COGNITO_CLIENT_ID')
+            if client_id is None:
+                print('Error: Cognito client ID must be provided via --client-id or COGNITO_CLIENT_ID environment variable')
+                exit(1)
+
+        # Create authentication function
+        get_id_token = create_get_id_token(args.region, client_id, args.username, args.password)
 
     try:
         eastern_tz = pytz.timezone('US/Eastern')
@@ -698,8 +813,8 @@ async def main():
 
             print(f"Starting CSV mode processing, batch {start_batch}, schedule '{schedule}', request mode '{request_mode}'", flush=True)
 
-            figi_bond_info = figi_to_issue_date(args.historical_bonds)
-            date_to_figis = load_date_ticker_csv(args.date_ticker_csv, args.historical_bonds)
+            figi_bond_info = figi_to_issue_date()
+            date_to_figis = load_date_ticker_csv(args.date_ticker_csv)
 
             # Generate inference requests per date
             inference_requests = []
@@ -733,21 +848,21 @@ async def main():
 
             print(f"Starting processing from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}, batch {start_batch}, schedule '{schedule}', request mode '{request_mode}'", flush=True)
 
-            figi_bond_info = figi_to_issue_date(args.historical_bonds)
+            figi_bond_info = figi_to_issue_date()
             timestamps = generate_timestamps(get_trading_days(start_date, end_date), schedule=schedule)
             timestamp_count = len(timestamps)
             print(f"Timestamp count: {timestamp_count}", flush=True)
 
-            # Load FIGIs from CUSIP file or default universe
+            # Load FIGIs from CUSIP file, historical universe, or current universe
             if args.cusips:
                 print(f"Loading FIGIs from CUSIP file: {args.cusips}", flush=True)
-                figis = load_figis_from_cusip_file(args.cusips, args.historical_bonds)
+                figis = load_figis_from_cusip_file(args.cusips)
+            elif args.use_current_universe:
+                print("Loading current universe from S3 universe.txt", flush=True)
+                figis = load_universe()
             else:
-                if args.historical_bonds:
-                    print(f"Loading universe from historical bonds file: {args.historical_bonds}", flush=True)
-                else:
-                    print("Loading default universe from S3", flush=True)
-                figis = load_universe(args.historical_bonds)
+                print("Building historical universe by querying API for each month...", flush=True)
+                figis = await build_historical_universe(start_date, end_date, get_id_token, args.server)
 
             inference_requests = get_inference_requests(figis, timestamps, figi_bond_info, request_mode=request_mode, request_type=request_type)
 
@@ -921,10 +1036,16 @@ async def retrieve_batch(batch, batch_idx=None, get_id_token=None, server=None):
                 print(f"{batch_prefix}Requesting batch with {len(batch)} inference requests", flush=True)
 
                 # Create message with token and inference requests
-                msg = {
-                    'token': get_id_token(),
-                    'inference': batch
-                }
+                if get_id_token is not None:
+                    msg = {
+                        'token': get_id_token(),
+                        'inference': batch
+                    }
+                else:
+                    # No authentication - send inference requests without token
+                    msg = {
+                        'inference': batch
+                    }
                 await ws.send(json.dumps(msg))
                 
                 last_message_time = time.time()
