@@ -10,4 +10,4 @@ websockets
 ijson
 ujson
 aiofiles
-
+pandas
