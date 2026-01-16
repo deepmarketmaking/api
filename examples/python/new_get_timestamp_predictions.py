@@ -783,6 +783,12 @@ async def main():
 
     args = parser.parse_args()
 
+    # Debug output
+    print(f"DEBUG: args.start_date = {repr(args.start_date)}", flush=True)
+    print(f"DEBUG: args.end_date = {repr(args.end_date)}", flush=True)
+    print(f"DEBUG: args.start_batch = {repr(args.start_batch)}", flush=True)
+    print(f"DEBUG: args.no_auth = {repr(args.no_auth)}", flush=True)
+
     # Handle authentication setup
     if args.no_auth:
         print("Skipping authentication (--no-auth specified)", flush=True)
