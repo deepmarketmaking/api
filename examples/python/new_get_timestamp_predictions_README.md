@@ -298,13 +298,22 @@ python3 new_get_timestamp_predictions.py 2024-01-01 2024-12-31 100 --username us
 
 By default, the script builds a **historical universe** to ensure complete coverage:
 
-1. Retrieves the S3 version of `bond_data.json` from just before your start date
-2. Generates timestamps for the **1st of each month** at midnight UTC
-3. Sends inference requests to the API for all bonds at each monthly timestamp
-4. Collects the **union** of all FIGIs that returned valid responses across all months
-5. Uses this universe for the actual data collection
+1. Retrieves TWO versions of `bond_data.json` from S3:
+   - Version from **before** your start date (captures bonds that matured during the period)
+   - Version from **after** your end date or current (captures bonds issued during the period)
+2. **Filters** to only include bonds with valid S&P ratings (not missing, empty, or 'NR') in at least one version
+3. Takes the **union** of both bond sets for complete coverage
+4. Generates timestamps for the **1st of each month** at midnight UTC
+5. Sends inference requests to the API for all bonds at each monthly timestamp
+6. Collects the **union** of all FIGIs that returned valid responses across all months
+7. Uses this universe for the actual data collection
 
-**Why this matters**: The current `universe.txt` on S3 only contains bonds that are currently active. If you're analyzing historical data (e.g., 2023), many bonds that were active then have since matured and won't be in the current universe. The historical universe building ensures you capture all bonds that were active during your analysis period.
+**Why this matters**:
+- The current `universe.txt` on S3 only contains bonds that are currently active
+- If you're analyzing historical data, many bonds that were active then have since matured
+- Additionally, bonds issued DURING your analysis period need to be included
+- The dual-version approach ensures you capture ALL bonds active during your period, whether they matured before today or were issued during the period
+- S&P rating filtering ensures you only analyze bonds with credit ratings
 
 **To skip this** (use current universe only): Add `--use-current-universe` flag.
 
@@ -352,6 +361,37 @@ Files automatically split when exceeding 100M inferences, creating sequential fi
 - **Historical universe building** adds initial setup time but ensures complete coverage
 - Use `--request-mode minimal` for faster initial testing
 - Consider running batches in parallel for large date ranges
+
+## Caching
+
+The script automatically caches expensive operations to speed up reruns:
+
+### Universe Cache
+- **Location**: `~/.cache/timestamp_predictions/`
+- **Key**: Date range (e.g., `20240101_20241231_universe.json`)
+- **Contains**: List of FIGIs from historical universe building
+- **Benefit**: Skips the multi-minute API validation process on subsequent runs
+
+### Batch Cache
+- **Location**: `~/.cache/timestamp_predictions/`
+- **Key**: Date range + schedule + request mode (e.g., `20240101_20241231_batches_default_minimal_price.json`)
+- **Contains**: Pre-generated batch requests ready for API submission
+- **Benefit**: Skips inference request generation and batching on subsequent runs
+
+### Cache Invalidation
+To force rebuilding the universe or batches, simply delete the relevant cache files:
+```bash
+# Clear all caches
+rm -rf ~/.cache/timestamp_predictions/
+
+# Clear only universe cache for specific date range
+rm ~/.cache/timestamp_predictions/20240101_20241231_universe.json
+
+# Clear only batch cache for specific configuration
+rm ~/.cache/timestamp_predictions/20240101_20241231_batches_every_5min_minimal_price.json
+```
+
+**Note**: Caches are date-range specific. Different date ranges will have separate cache files.
 
 ## Error Handling
 

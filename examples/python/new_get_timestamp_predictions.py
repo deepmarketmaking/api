@@ -17,6 +17,7 @@ import asyncio
 import boto3
 import pandas as pd
 import pytz
+import hashlib
 from datetime import datetime, time as dt_time, timedelta, date
 from typing import List, Dict, Any, Optional, Set
 import websockets
@@ -51,6 +52,145 @@ PING_INTERVAL = 8
 MAX_RECONNECT_ATTEMPTS = 20
 RECONNECT_BACKOFF = 3.0
 MAX_RECONNECT_BACKOFF = 600.0
+
+# Cache directory
+CACHE_DIR = Path.home() / '.cache' / 'timestamp_predictions'
+
+def ensure_cache_dir():
+    """Ensure cache directory exists"""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+def get_cache_key(start_date: datetime, end_date: datetime, suffix: str = '') -> str:
+    """
+    Generate a cache key based on date range and optional suffix
+
+    Args:
+        start_date: Start date
+        end_date: End date
+        suffix: Optional suffix to differentiate cache types
+
+    Returns:
+        Cache filename
+    """
+    date_str = f"{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
+    if suffix:
+        return f"{date_str}_{suffix}.json"
+    return f"{date_str}.json"
+
+def load_cached_universe(start_date: datetime, end_date: datetime) -> Optional[List[str]]:
+    """
+    Load cached historical universe if it exists
+
+    Args:
+        start_date: Start date of the period
+        end_date: End date of the period
+
+    Returns:
+        List of FIGIs if cache exists, None otherwise
+    """
+    ensure_cache_dir()
+    cache_file = CACHE_DIR / get_cache_key(start_date, end_date, 'universe')
+
+    if cache_file.exists():
+        try:
+            with open(cache_file, 'r') as f:
+                data = json.load(f)
+                print(f"Loaded cached universe from {cache_file} ({len(data['figis'])} FIGIs)", flush=True)
+                return data['figis']
+        except Exception as e:
+            print(f"Error loading cached universe: {e}", flush=True)
+            return None
+    return None
+
+def save_cached_universe(start_date: datetime, end_date: datetime, figis: List[str]):
+    """
+    Save historical universe to cache
+
+    Args:
+        start_date: Start date of the period
+        end_date: End date of the period
+        figis: List of FIGIs to cache
+    """
+    ensure_cache_dir()
+    cache_file = CACHE_DIR / get_cache_key(start_date, end_date, 'universe')
+
+    try:
+        with open(cache_file, 'w') as f:
+            json.dump({
+                'start_date': start_date.strftime('%Y-%m-%d'),
+                'end_date': end_date.strftime('%Y-%m-%d'),
+                'created_at': datetime.now().isoformat(),
+                'figis': figis
+            }, f)
+        print(f"Saved universe cache to {cache_file}", flush=True)
+    except Exception as e:
+        print(f"Error saving universe cache: {e}", flush=True)
+
+def load_cached_batches(start_date: datetime, end_date: datetime, schedule: str, request_mode: str, request_type: str = 'price') -> Optional[List[List[Dict[str, Any]]]]:
+    """
+    Load cached batch requests if they exist
+
+    Args:
+        start_date: Start date
+        end_date: End date
+        schedule: Schedule type
+        request_mode: Request mode
+        request_type: Request type (for minimal mode)
+
+    Returns:
+        List of batches if cache exists, None otherwise
+    """
+    ensure_cache_dir()
+    suffix = f"batches_{schedule}_{request_mode}"
+    if request_mode == 'minimal':
+        suffix += f"_{request_type}"
+    cache_file = CACHE_DIR / get_cache_key(start_date, end_date, suffix)
+
+    if cache_file.exists():
+        try:
+            print(f"Loading cached batches from {cache_file}...", flush=True)
+            with open(cache_file, 'r') as f:
+                data = json.load(f)
+                print(f"Loaded {len(data['batches'])} batches from cache", flush=True)
+                return data['batches']
+        except Exception as e:
+            print(f"Error loading cached batches: {e}", flush=True)
+            return None
+    return None
+
+def save_cached_batches(start_date: datetime, end_date: datetime, schedule: str, request_mode: str, request_type: str, batches: List[List[Dict[str, Any]]]):
+    """
+    Save batch requests to cache
+
+    Args:
+        start_date: Start date
+        end_date: End date
+        schedule: Schedule type
+        request_mode: Request mode
+        request_type: Request type (for minimal mode)
+        batches: List of batches to cache
+    """
+    ensure_cache_dir()
+    suffix = f"batches_{schedule}_{request_mode}"
+    if request_mode == 'minimal':
+        suffix += f"_{request_type}"
+    cache_file = CACHE_DIR / get_cache_key(start_date, end_date, suffix)
+
+    try:
+        print(f"Saving {len(batches)} batches to cache...", flush=True)
+        with open(cache_file, 'w') as f:
+            json.dump({
+                'start_date': start_date.strftime('%Y-%m-%d'),
+                'end_date': end_date.strftime('%Y-%m-%d'),
+                'schedule': schedule,
+                'request_mode': request_mode,
+                'request_type': request_type,
+                'created_at': datetime.now().isoformat(),
+                'batches': batches
+            }, f)
+        print(f"Saved batch cache to {cache_file}", flush=True)
+    except Exception as e:
+        print(f"Error saving batch cache: {e}", flush=True)
 
 def get_s3_object_version_before_date(bucket: str, key: str, before_date: datetime) -> Optional[str]:
     """
@@ -171,6 +311,18 @@ async def build_historical_universe(start_date: datetime, end_date: datetime, ge
     in the specified date range. Returns the union of all FIGIs that were valid
     during any month in the period.
 
+    This function loads two versions of bond_data.json:
+    1. Version from BEFORE start_date (captures bonds that matured during the period)
+    2. Version from AFTER end_date or current (captures bonds issued during the period)
+
+    It takes the union of both sets for API queries, ensuring complete coverage of all
+    bonds that were active at any point during the evaluation period.
+
+    Filtering: Only includes bonds that have a valid S&P rating (field 'r') in at least
+    one of the two versions. Bonds with missing, empty, or 'NR' ratings are excluded.
+
+    Caching: Results are cached to ~/.cache/timestamp_predictions/ keyed by date range.
+
     Args:
         start_date: Start date of the period
         end_date: End date of the period
@@ -178,18 +330,70 @@ async def build_historical_universe(start_date: datetime, end_date: datetime, ge
         server: Server URL (optional)
 
     Returns:
-        tuple[List[str], Optional[str]]: Tuple of (list of unique FIGIs, version_id used for bond_data.json)
+        tuple[List[str], Optional[str]]: Tuple of (list of unique FIGIs, version_id for bond info)
+        The version_id is from after the end_date (or None if using current) for most complete data.
     """
     print(f"Building historical universe for period {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}", flush=True)
 
-    # Get the version of bond_data.json from just before the start date
-    version_id = get_s3_object_version_before_date('deepmm.public', 'bond_data.json', start_date)
-    if version_id is None:
-        print("Warning: Could not find historical bond_data.json version, using current version", flush=True)
-        version_id = None
+    # Check cache first
+    cached_figis = load_cached_universe(start_date, end_date)
+    if cached_figis is not None:
+        # Still need to determine the bond_info_version_id
+        after_date = end_date + timedelta(days=1)
+        after_version_id = get_s3_object_version_before_date('deepmm.public', 'bond_data.json', after_date)
+        return cached_figis, after_version_id
 
-    # Load bond data
-    bond_data = load_bond_data_from_s3(version_id)
+    # Get the version of bond_data.json from just before the start date
+    # This captures bonds that may have matured during the period
+    before_version_id = get_s3_object_version_before_date('deepmm.public', 'bond_data.json', start_date)
+    if before_version_id is None:
+        print("Warning: Could not find bond_data.json version before start date", flush=True)
+
+    # Get the version from after the end date (or use current)
+    # This captures bonds that were issued during the period
+    # Add one day to end_date to find versions after it
+    after_date = end_date + timedelta(days=1)
+    after_version_id = get_s3_object_version_before_date('deepmm.public', 'bond_data.json', after_date)
+    if after_version_id is None:
+        print("Warning: Could not find bond_data.json version after end date, will use current version", flush=True)
+
+    # Load both versions and take the union
+    bonds_before = load_bond_data_from_s3(before_version_id) if before_version_id else []
+    bonds_after = load_bond_data_from_s3(after_version_id) if after_version_id else load_bond_data_from_s3(None)
+
+    # Track FIGIs with valid S&P ratings in either version
+    figis_with_valid_rating = set()
+
+    def has_valid_sp_rating(bond: Dict[str, Any]) -> bool:
+        """Check if bond has a valid S&P rating (not missing, empty, or 'NR')"""
+        rating = bond.get('r', '')
+        return rating and rating != 'NR' and rating.strip() != ''
+
+    for bond in bonds_before:
+        if has_valid_sp_rating(bond):
+            figis_with_valid_rating.add(bond['F'])
+
+    for bond in bonds_after:
+        if has_valid_sp_rating(bond):
+            figis_with_valid_rating.add(bond['F'])
+
+    print(f"Found {len(figis_with_valid_rating)} bonds with valid S&P ratings across both versions", flush=True)
+
+    # Create union of bonds based on FIGI, filtering to only those with valid ratings
+    figi_to_bond = {}
+    for bond in bonds_before:
+        if bond['F'] in figis_with_valid_rating:
+            figi_to_bond[bond['F']] = bond
+    for bond in bonds_after:
+        if bond['F'] in figis_with_valid_rating:
+            figi_to_bond[bond['F']] = bond  # Later version takes precedence
+
+    bond_data = list(figi_to_bond.values())
+    print(f"Combined {len(bonds_before)} bonds from before start_date with {len(bonds_after)} bonds from after end_date -> {len(bond_data)} unique bonds with valid S&P ratings", flush=True)
+
+    # Use the "after" version for bond info (most complete data)
+    # If we couldn't find an "after" version, use None (current)
+    bond_info_version_id = after_version_id
 
     # Generate list of first days of each month in the range
     monthly_timestamps = []
@@ -268,7 +472,12 @@ async def build_historical_universe(start_date: datetime, end_date: datetime, ge
 
     print(f"\nHistorical universe building complete: {len(all_valid_figis)} unique FIGIs found across all months", flush=True)
 
-    return sorted(list(all_valid_figis)), version_id
+    # Save to cache
+    figis_list = sorted(list(all_valid_figis))
+    save_cached_universe(start_date, end_date, figis_list)
+
+    # Return FIGIs and version_id for bond info
+    return figis_list, bond_info_version_id
 
 def load_cusip_to_figi_mapping() -> Dict[str, str]:
     """
@@ -881,11 +1090,20 @@ async def main():
             # Load bond info using the same version as the historical universe (if applicable)
             figi_bond_info = figi_to_issue_date(bond_data_version_id)
 
-            inference_requests = get_inference_requests(figis, timestamps, figi_bond_info, request_mode=request_mode, request_type=request_type)
+            # Try to load cached batches
+            cached_batches = load_cached_batches(start_date, end_date, schedule, request_mode, request_type)
+            if cached_batches is not None:
+                batches = cached_batches
+            else:
+                # Generate inference requests and batches
+                inference_requests = get_inference_requests(figis, timestamps, figi_bond_info, request_mode=request_mode, request_type=request_type)
 
-        batch_size = int(128_000 / timestamp_count) # Because each inference request has a list of timestamps.
-        batches = [inference_requests[i:i + batch_size] for i in range(0, len(inference_requests), batch_size)]
-        print(f"Batches count: {len(batches)}", flush=True)
+                batch_size = int(128_000 / timestamp_count) # Because each inference request has a list of timestamps.
+                batches = [inference_requests[i:i + batch_size] for i in range(0, len(inference_requests), batch_size)]
+                print(f"Batches count: {len(batches)}", flush=True)
+
+                # Save batches to cache
+                save_cached_batches(start_date, end_date, schedule, request_mode, request_type, batches)
 
         # Determine output file path
         date_range = f"{start_date.strftime('%Y%m%d')}_{end_date.strftime('%Y%m%d')}"
