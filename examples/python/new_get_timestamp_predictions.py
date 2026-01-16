@@ -354,9 +354,10 @@ async def build_historical_universe(start_date: datetime, end_date: datetime, ge
         for bond in bonds_after:
             figi_to_bond[bond['F']] = bond  # Later version takes precedence
 
-        # Build figi_bond_info from the union
+        # Build figi_bond_info from the union, filtering out FIGIs not found in bond data
         eastern_tz = pytz.timezone('US/Eastern')
         figi_bond_info = {}
+        missing_figis = []
         for figi in cached_figis:
             if figi in figi_to_bond:
                 bond = figi_to_bond[figi]
@@ -364,6 +365,18 @@ async def build_historical_universe(start_date: datetime, end_date: datetime, ge
                     'settlement_date': eastern_tz.localize(datetime.strptime(bond['s'], '%Y-%m-%d')),
                     'maturity_date': eastern_tz.localize(datetime.strptime(bond['m'], '%Y-%m-%d'))
                 }
+            else:
+                missing_figis.append(figi)
+
+        if missing_figis:
+            print(f"Warning: {len(missing_figis)} cached FIGIs not found in bond data versions (will be excluded):", flush=True)
+            for figi in missing_figis[:10]:
+                print(f"  - {figi}", flush=True)
+            if len(missing_figis) > 10:
+                print(f"  ... and {len(missing_figis) - 10} more", flush=True)
+            # Filter out missing FIGIs from the result
+            cached_figis = [figi for figi in cached_figis if figi in figi_bond_info]
+            print(f"Filtered universe: {len(cached_figis)} FIGIs remaining", flush=True)
 
         return cached_figis, figi_bond_info
 
