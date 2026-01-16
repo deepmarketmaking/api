@@ -18,13 +18,11 @@ This script evaluates bond pricing models at specific timestamps across trading 
 ## Basic Usage
 
 ```bash
-python3 new_get_timestamp_predictions.py [OPTIONS] [USERNAME] [PASSWORD] [START_DATE] [END_DATE] START_BATCH
+python3 new_get_timestamp_predictions.py [START_DATE] [END_DATE] START_BATCH [OPTIONS]
 ```
 
 ### Positional Arguments
 
-- `USERNAME` (optional): Deep MM username - not required with `--no-auth`
-- `PASSWORD` (optional): Deep MM password - not required with `--no-auth`
 - `START_DATE` (optional): Start date in YYYY-MM-DD format - not used with `--date-ticker-csv`
 - `END_DATE` (optional): End date in YYYY-MM-DD format - not used with `--date-ticker-csv`
 - `START_BATCH` (required): Starting batch number (typically `0` to process all batches)
@@ -32,6 +30,12 @@ python3 new_get_timestamp_predictions.py [OPTIONS] [USERNAME] [PASSWORD] [START_
 ## Command-Line Options
 
 ### Authentication & Server
+
+- `--username USERNAME`
+  Deep MM username (required unless using `--no-auth`)
+
+- `--password PASSWORD`
+  Deep MM password (required unless using `--no-auth`)
 
 - `--no-auth`
   Skip authentication for servers with authentication disabled
@@ -95,11 +99,11 @@ Query all trading days from Jan 1 to Dec 31, 2024, using 9 AM and 4 PM timestamp
 
 ```bash
 python3 new_get_timestamp_predictions.py \
-  myusername \
-  mypassword \
   2024-01-01 \
   2024-12-31 \
-  0
+  0 \
+  --username myusername \
+  --password mypassword
 ```
 
 This will:
@@ -124,18 +128,18 @@ python3 new_get_timestamp_predictions.py \
 
 ### Example 3: Every 5 Minutes with Minimal Parameters
 
-Generate predictions every 5 minutes (8 AM - 6 PM ET) using only bid/offer price requests:
+Generate predictions every 5 minutes (8 AM - 6 PM ET) using only bid/offer spread requests:
 
 ```bash
 python3 new_get_timestamp_predictions.py \
-  myusername \
-  mypassword \
   2024-01-01 \
   2024-12-31 \
   0 \
+  --username myusername \
+  --password mypassword \
   --schedule every_5min \
   --request-mode minimal \
-  --request-type price
+  --request-type spread
 ```
 
 This generates:
@@ -150,11 +154,11 @@ Every 30 seconds with all quantity levels:
 
 ```bash
 python3 new_get_timestamp_predictions.py \
-  myusername \
-  mypassword \
   2024-06-01 \
   2024-06-30 \
   0 \
+  --username myusername \
+  --password mypassword \
   --schedule high_freq \
   --request-mode full
 ```
@@ -171,11 +175,11 @@ Get predictions only at market close (6 PM ET):
 
 ```bash
 python3 new_get_timestamp_predictions.py \
-  myusername \
-  mypassword \
   2024-01-01 \
   2024-12-31 \
   0 \
+  --username myusername \
+  --password mypassword \
   --schedule eod
 ```
 
@@ -185,11 +189,11 @@ Use the current universe.txt instead of building historical universe:
 
 ```bash
 python3 new_get_timestamp_predictions.py \
-  myusername \
-  mypassword \
   2024-01-01 \
   2024-12-31 \
   0 \
+  --username myusername \
+  --password mypassword \
   --use-current-universe
 ```
 
@@ -201,11 +205,11 @@ Query only specific bonds listed in a CUSIP file:
 
 ```bash
 python3 new_get_timestamp_predictions.py \
-  myusername \
-  mypassword \
   2024-01-01 \
   2024-12-31 \
   0 \
+  --username myusername \
+  --password mypassword \
   --cusips my_bonds.txt
 ```
 
@@ -222,9 +226,9 @@ Query specific issuers on specific dates:
 
 ```bash
 python3 new_get_timestamp_predictions.py \
-  myusername \
-  mypassword \
   0 \
+  --username myusername \
+  --password mypassword \
   --date-ticker-csv my_events.csv \
   --schedule every_5min
 ```
@@ -242,11 +246,11 @@ Save output to a specific directory:
 
 ```bash
 python3 new_get_timestamp_predictions.py \
-  myusername \
-  mypassword \
   2024-01-01 \
   2024-12-31 \
   0 \
+  --username myusername \
+  --password mypassword \
   --output /data/predictions/
 ```
 
@@ -258,11 +262,11 @@ If processing was interrupted, resume from batch 50:
 
 ```bash
 python3 new_get_timestamp_predictions.py \
-  myusername \
-  mypassword \
   2024-01-01 \
   2024-12-31 \
-  50
+  50 \
+  --username myusername \
+  --password mypassword
 ```
 
 This skips batches 0-49 and processes from batch 50 onwards.
@@ -281,13 +285,13 @@ The script splits inference requests into batches to manage API load and memory:
 Example of parallel processing:
 ```bash
 # Terminal 1
-python3 new_get_timestamp_predictions.py user pass 2024-01-01 2024-12-31 0 &
+python3 new_get_timestamp_predictions.py 2024-01-01 2024-12-31 0 --username user --password pass &
 
 # Terminal 2
-python3 new_get_timestamp_predictions.py user pass 2024-01-01 2024-12-31 50 &
+python3 new_get_timestamp_predictions.py 2024-01-01 2024-12-31 50 --username user --password pass &
 
 # Terminal 3
-python3 new_get_timestamp_predictions.py user pass 2024-01-01 2024-12-31 100 &
+python3 new_get_timestamp_predictions.py 2024-01-01 2024-12-31 100 --username user --password pass &
 ```
 
 ## Historical Universe Building (Default Behavior)

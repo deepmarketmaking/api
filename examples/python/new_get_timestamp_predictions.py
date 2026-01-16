@@ -694,11 +694,21 @@ async def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"Available schedules: {', '.join(TIMESTAMP_GENERATORS.keys())}"
     )
-    parser.add_argument('username', type=str, nargs='?', default=None, help='Deep MM username (not required with --no-auth)')
-    parser.add_argument('password', type=str, nargs='?', default=None, help='Deep MM password (not required with --no-auth)')
     parser.add_argument('start_date', type=str, nargs='?', default=None, help='Start date (YYYY-MM-DD). Not used in --date-ticker-csv mode')
     parser.add_argument('end_date', type=str, nargs='?', default=None, help='End date (YYYY-MM-DD). Not used in --date-ticker-csv mode')
     parser.add_argument('start_batch', type=int, help='Starting batch number')
+    parser.add_argument(
+        '--username',
+        type=str,
+        default=None,
+        help='Deep MM username (not required with --no-auth)'
+    )
+    parser.add_argument(
+        '--password',
+        type=str,
+        default=None,
+        help='Deep MM password (not required with --no-auth)'
+    )
     parser.add_argument(
         '--region',
         type=str,
@@ -780,7 +790,7 @@ async def main():
     else:
         # Validate that username and password are provided
         if not args.username or not args.password:
-            print('Error: username and password are required unless --no-auth is specified')
+            print('Error: --username and --password are required unless --no-auth is specified')
             exit(1)
 
         # Get client_id from args or environment variable
