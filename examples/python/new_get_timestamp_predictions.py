@@ -1147,7 +1147,7 @@ async def main():
                 # Generate inference requests and batches
                 inference_requests = get_inference_requests(figis, timestamps, figi_bond_info, request_mode=request_mode, request_type=request_type)
 
-                batch_size = int(32_000 / timestamp_count) # Because each inference request has a list of timestamps.
+                batch_size = int(128_000 / timestamp_count) # Because each inference request has a list of timestamps.
                 batches = [inference_requests[i:i + batch_size] for i in range(0, len(inference_requests), batch_size)]
                 print(f"Batches count: {len(batches)}", flush=True)
 
