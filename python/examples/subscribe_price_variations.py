@@ -5,8 +5,7 @@ import time
 import itertools
 from tenacity import Retrying, stop_after_delay, wait_fixed, wait_random
 
-from authentication import create_get_id_token
-from connection import connect
+from axor import create_get_id_token, connect
 
 SERVER = 'wss://molyneux.deepmm.com'
 

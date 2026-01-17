@@ -1,15 +1,13 @@
 import asyncio
 import json
 from sys import argv
-import time
 
-from authentication import create_get_id_token
-from connection import connect
-from cusips_to_figis import openfigi_map_cusips_to_figis
+from axor import create_get_id_token, connect, openfigi_map_cusips_to_figis
+
 
 async def main():
     if len(argv) != 6:
-        print('Usage: python subscribe.py <AWS Region> <Cognito Client ID> <Deep MM dev username> <password> <openfigi_api_key>')
+        print('Usage: python timestamp.py <AWS Region> <Cognito Client ID> <Deep MM dev username> <password> <openfigi_api_key>')
         print('See README for additional details')
         exit()
 
@@ -35,7 +33,8 @@ async def main():
                 'quantity': 1_000_000,
                 'side': 'bid',
                 'ats_indicator': "N",
-                'subscribe': True,
+                'timestamp': ['2023-11-01T15:10:07.661Z', '2023-11-02T15:10:07.661Z'],
+                'subscribe': False,
             },
             {
                 'rfq_label': 'price',
@@ -43,7 +42,8 @@ async def main():
                 'quantity': 1_000_000,
                 'side': 'dealer',
                 'ats_indicator': "N",
-                'subscribe': True,
+                'timestamp': ['2023-11-02T15:10:07.661Z', '2023-11-02T15:10:07.661Z'],
+                'subscribe': False,
             },
             {
                 'rfq_label': 'spread',
@@ -51,7 +51,8 @@ async def main():
                 'quantity': 1_000_000,
                 'side': 'offer',
                 'ats_indicator': "Y",
-                'subscribe': True,
+                'timestamp': ['2023-11-02T15:10:07.661Z', '2023-11-02T15:10:07.661Z'],
+                'subscribe': False,
             },
         ]
     }
@@ -68,11 +69,10 @@ async def main():
     ws = await connect()
     # send the message to the server
     await ws.send(json.dumps(msg))
-    # keep track of the last time we sent a token to the server
-    last_token_send_time = time.time()
 
-    # listen for messages from the server forever
-    while True:
+    # NOTE: we get one server response per unique rfq_label,
+    # in this case one for 'price' and one for 'spread'
+    for _ in range(2):
         # wait for a response from the server
         response = await ws.recv()
         # Parse the response as JSON
@@ -90,11 +90,8 @@ async def main():
         pretty_response = json.dumps(response_json, indent=4)
         print("Pretty Printed Response:", pretty_response)
 
-        # periodically send an updated token to the server so our session does not expire
-        # NOTE: the server does send a response to a message with only an updated token
-        if time.time() - last_token_send_time > 60:
-            await ws.send(json.dumps({ 'token': get_id_token() }))
-            last_token_send_time = time.time()
+    # close the WebSocket
+    await ws.close()
 
 
 if __name__ == '__main__':

@@ -2,9 +2,6 @@ import numpy as np
 from scipy.stats import johnsonsu
 from scipy.optimize import minimize
 from scipy.stats import gaussian_kde
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 
 def fit_johnson_su(percentiles, percentile_values):
@@ -54,6 +51,10 @@ def fit_johnson_su(percentiles, percentile_values):
 
 
 def plot_cdf_of_fitted_johnson_su_distribution(plot_filename, percentiles, percentile_values, gamma, delta, loc, scale):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
     # Calculate the CDF of the original data
     p_values = np.array(percentiles) / 100.0
 
@@ -79,6 +80,10 @@ def plot_cdf_of_fitted_johnson_su_distribution(plot_filename, percentiles, perce
 
 
 def plot_pdf_of_fitted_johnson_su_distribution(plot_filename, percentiles, percentile_values, gamma, delta, loc, scale):
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+
     x_values = np.linspace(min(percentile_values) - 1, max(percentile_values) + 1, 1000)
 
     # Plot the PDF comparison
