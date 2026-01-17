@@ -1532,26 +1532,43 @@ def get_inference_requests(figis, timestamps, figi_bond_info, request_mode: str 
         request_params = REQUEST_PARAMETER_MODES[request_mode]()
 
     # Pre-filter timestamps for each FIGI
-    print("Pre-filtering timestamps based on bond settlement and maturity dates...", flush=True)
+    print(f"Pre-filtering timestamps based on bond settlement and maturity dates for {len(figis)} FIGIs...", flush=True)
     figi_timestamps = {}
     total_timestamps_before = len(figis) * len(timestamps)
     total_timestamps_after = 0
     filtered_out_figis = []
 
-    for figi in figis:
-        bond_info = figi_bond_info[figi]
-        settlement_date = bond_info['settlement_date']
-        maturity_date = bond_info['maturity_date']
-        # Filter timestamps for this FIGI
-        figi_timestamps[figi] = [
-            format_timestamp_for_api(t) for t in timestamps
-            if settlement_date <= t <= maturity_date
-        ]
-        total_timestamps_after += len(figi_timestamps[figi])
+    # Pre-format all timestamps once to avoid repeated formatting
+    print("  Pre-formatting timestamps...", flush=True)
+    formatted_timestamps = [format_timestamp_for_api(t) for t in timestamps]
 
-        # Track FIGIs with no valid timestamps
-        if len(figi_timestamps[figi]) == 0:
-            filtered_out_figis.append((figi, settlement_date.strftime('%Y-%m-%d'), maturity_date.strftime('%Y-%m-%d')))
+    # Create a lookup table: timestamp -> formatted_timestamp
+    # This avoids calling format_timestamp_for_api millions of times
+    timestamp_pairs = list(zip(timestamps, formatted_timestamps))
+
+    # Process in batches with progress reporting
+    batch_size = 1000
+    print(f"  Filtering timestamps for each FIGI...", flush=True)
+    for i in range(0, len(figis), batch_size):
+        batch_figis = figis[i:i + batch_size]
+        for figi in batch_figis:
+            bond_info = figi_bond_info[figi]
+            settlement_date = bond_info['settlement_date']
+            maturity_date = bond_info['maturity_date']
+            # Filter timestamps for this FIGI - using pre-formatted pairs
+            figi_timestamps[figi] = [
+                formatted_t for t, formatted_t in timestamp_pairs
+                if settlement_date <= t <= maturity_date
+            ]
+            total_timestamps_after += len(figi_timestamps[figi])
+
+            # Track FIGIs with no valid timestamps
+            if len(figi_timestamps[figi]) == 0:
+                filtered_out_figis.append((figi, settlement_date.strftime('%Y-%m-%d'), maturity_date.strftime('%Y-%m-%d')))
+
+        # Progress report every batch
+        if (i + batch_size) % 5000 == 0 or i + batch_size >= len(figis):
+            print(f"  Processed {min(i + batch_size, len(figis))}/{len(figis)} FIGIs...", flush=True)
 
     if filtered_out_figis:
         print(f"Warning: {len(filtered_out_figis)} FIGIs have no valid timestamps (timestamps outside settlement/maturity range):", flush=True)
