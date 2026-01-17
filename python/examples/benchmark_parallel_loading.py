@@ -9,7 +9,6 @@ import time
 import os
 import sys
 import tempfile
-import gzip
 
 # Add the script directory to path to import our module
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
