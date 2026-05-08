@@ -334,6 +334,12 @@ https://github.com/deepmarketmaking/pyxll
 
 ## FAQ
 
+**What does `{"message": "deactivated"}` mean?**
+
+The `deactivated` message means that the WebSocket connection's authentication token/session is no longer active. This most commonly happens when another connection logs in with the same Cognito username and creates a new IdToken, which deactivates the token used by the earlier connection. It can also happen if too many simultaneous sessions are open under the same account/token.
+
+If you need multiple WebSocket connections, authenticate once and share the same Cognito IdToken across those connections. You can have up to five simultaneous API connections, but they must use the same IdToken; creating a new IdToken for the same user will disconnect previous connections for that user.
+
 **Why do you currently only support FIGI identifiers in the API?**
 
 Mostly for historical reasons as we were developing the backend infrastructure supporting the AI model's inference. Also there's a bit of frustration with the CUSIP system in that FactSet charges an exorbidant licensing fee to allow us to merely display the CUSIPs on our web application; it seems that [the industry is possibly moving towards this more open system](https://www.mayerbrown.com/en/insights/publications/2024/08/us-regulators-propose-data-standards-to-implement-the-financial-data-transparency-act). By using FIGIs, we are not required to check if someone has a CUSIP license before we allow them to try out the API, which can obviously increase the length of our sales cycle. 
