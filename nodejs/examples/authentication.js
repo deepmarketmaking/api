@@ -29,7 +29,7 @@ export const createGetIdToken = (region, clientId, username, password) => {
     }
     const extractIdTokenClaims = () => {
         const claimsPayload = idToken.split('.')[1];
-        const claimsString = Buffer.from(claimsPayload + '==', 'base64').toString('ascii');
+        const claimsString = Buffer.from(claimsPayload, 'base64url').toString('utf8');
         const claims = JSON.parse(claimsString);
         authTime = claims['auth_time'];
         exp = claims['exp'];
