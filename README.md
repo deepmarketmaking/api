@@ -106,6 +106,16 @@ See the [Node.js examples](nodejs/examples/) for integration examples.
   - While testing use `2so174j2e4fsg1m28kc9id3hgk`
   - For production deployments contact us for a dedicated Cognito Client ID
 
+### Request strategy
+
+Deep MM supports both subscription-style requests (`"subscribe": true`) and one-off requests (`"subscribe": false`) over the same WebSocket API.
+
+For pre-trade integrations, it is often useful to request enough signal variation to match the RFQs you expect to price. For example, you can request inferences across multiple sizes, both `bid` and `offer` sides, and both ATS and non-ATS assumptions (`ats_indicator` of `"Y"` and `"N"`). For size variation, we recommend using the standardized par values listed in the throttling section below. Using standardized sizes reduces server load because common inferences can be reused across clients. If you start with only one size, `1_000_000` is generally the best default based on our experiments.
+
+You can linearly interpolate between the returned size points to approximate the size of a specific RFQ. If you need the exact configuration of a particular RFQ, you can also make a one-off query for that exact quantity/side/ATS combination rather than maintaining a subscription for every possible combination. One-off queries are generally a better fit for exact ad hoc RFQ pricing and should have lower latency than waiting for a subscription update, because the current production servers are primarily tuned for high-throughput subscription cycling. If your use case needs very low-latency one-off pricing at scale, contact Deep MM so we can discuss server capacity or a server tuned for that scenario.
+
+As your integration scales up, please keep Deep MM informed of any issues that could relate to server load. We can monitor load and add capacity as needed.
+
 ### Batching
 
 When submitting requests to the websocket server for historical inferences, it's important to batch them into as large as possible messages (while staying under the throttling limits). Our server has much better throughput for historical inferences with large rather than small batches. If you run into websocket client message size limits, here's an example of how to set up the connection with larger limits:
@@ -120,6 +130,8 @@ When submitting requests to the websocket server for historical inferences, it's
    ```
 
 It's also generally a good idea to submit subscription requests in larger batches, but it's not quite as important because the subscriptions for your connection are eventually consolidated into a single list automatically on the server side.
+
+For normal subscription requests, the server sends an immediate snapshot/first response for the accepted subscription, and subsequent updates can arrive independently later. Clients can treat the first response as the current snapshot and later inference messages as updates. The immediate snapshot behavior applies for subscription batches up to the configured immediate-response threshold. Very large batches may be handled differently to avoid putting too much load on the server at once, so it is best to send subscriptions in reasonable batches.
 
 ### Throttling
 
@@ -323,10 +335,26 @@ Here's a sample response:
 
 The attributes of the assumed trade are indicated for each of the inferences. The spread and prices come down as percentiles from the 5th to the 95th percentiles in 5% increments. For spread the treasury benchmark cusip is noted in the response. The date is in the UTC timezone.
 
+## Handling unsupported or unavailable inferences
+
+If a request includes a FIGI that Deep MM does not recognize or does not currently support, the WebSocket reports the unsupported FIGI values and filters them out:
+
+```json
+{"message":"unrecognized figis","description":"The request contains inferences with unrecognized figis.","data":{"unrecognized_figis":["<FIGI>"]}}
+```
+
+Unsupported FIGIs are not counted as active subscriptions. If a request contains a mix of valid and invalid FIGIs, the invalid FIGIs are reported this way and the valid subscriptions can still proceed.
+
+If a FIGI is recognized but the server cannot produce an inference for a particular requested timestamp because there is not enough historical data for that point, the WebSocket reports the specific unavailable inference:
+
+```json
+{"message":"insufficient data","description":"Unable to infer due to insufficient data","data":[{"rfq_label":"<rfq_label>","figi":"<FIGI>","timestamp":"<timestamp>"}]}
+```
+
+For current/live subscriptions, the subscription can remain active; if a particular update cannot be inferred due to insufficient data, the server reports that condition rather than closing the connection.
+
 ## Known Issues
 
-- **Unrecognized FIGIs**: We currently have about 94% coverage in the investment grade (IG) index, and a similar percentage in high yield (HY) bonds index, so some of the FIGI values you may send to the API will trigger a message saying that there are unrecognized FIGIs, and will have a list of the FIGIs. The issue is that the API currently returns a list of numbers which are our internal ID numbers. We are working on rolling out a fix so that the unrecognized FIGIs are reported back. In staging we have the step-up-step down bonds available, which increases our total universe size by about 6,000, and this will be published to production soon.
-- **Websockets closed when there's an error**: In some cases when an error is reported back by the API, the websocket connection pre-maturely shuts down. We are working on a fix
 - **Portfolio trades not adjusted for**: We are planning a new version of the model which takes into account whether a trade is a portfolio trade or not. Right now our model is not able to see whether a trade is a portfolio trade or not, and so it's not able to learn to mostly ignore a portfolio trades price like you would expect.
 - **On the run rates roll-overs**: When there is a new on-the-run 30Y treasury, the week of the auction we immediately switch to the new one-off-the-run 30Y treasury as the benchmark for the 30Y tenor. We are working with our data vendor to resolve this issue.
 
