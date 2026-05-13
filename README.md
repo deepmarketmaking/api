@@ -25,7 +25,9 @@ The output of the model currently is the inferred 5th through the 95th percentil
 
 ## Universe
 
-We don't cover all bonds yet but we are working hard to increase our coverage. You can see the list of bonds that we cover [in this file downloadable here](https://s3.us-east-1.amazonaws.com/deepmm.public/universe.txt) (it's updated every night).
+We don't cover all bonds yet but we are working hard to increase our coverage. You can see the list of bonds that we cover [in this file downloadable here](https://public.deepmm.com/universe.txt) (it's updated every night).
+
+Files published from the public Deep MM S3 bucket are available under the `https://public.deepmm.com/` hostname. For example, `s3://deepmm.public/path/to/file.ext` is available as `https://public.deepmm.com/path/to/file.ext`.
 
 ## Getting Started
 
