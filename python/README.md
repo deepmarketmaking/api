@@ -128,6 +128,16 @@ plot_cdf_of_fitted_johnson_su_distribution(
 )
 ```
 
+## Request guidance
+
+The WebSocket API supports both real-time subscriptions (`"subscribe": true`) and one-off requests (`"subscribe": false`). For pre-trade integrations, consider requesting multiple signal variations that match the RFQs you expect to price: several standardized quantities, both `bid` and `offer` sides, and both ATS and non-ATS assumptions. If you only start with one size, `1_000_000` is generally the best default based on Deep MM experiments.
+
+Recommended standardized quantities are `1_000`, `10_000`, `100_000`, `250_000`, `500_000`, `1_000_000`, `2_000_000`, `3_000_000`, `4_000_000`, and `5_000_000`. Using these values reduces server load because common inferences can be reused across clients. You can linearly interpolate between standardized size points to approximate a specific RFQ size, or send a one-off request for the exact RFQ configuration when exact ad hoc pricing is more important than maintaining a subscription.
+
+For normal subscription requests, the server sends an immediate snapshot/first response for the accepted subscription, followed by later independent updates. Very large batches may be handled differently to protect server load, so send subscriptions in reasonable batches.
+
+Unsupported FIGIs are reported with an `unrecognized figis` message and are filtered out without counting as active subscriptions; valid subscriptions in the same mixed request can still proceed. If a recognized FIGI cannot be inferred for a requested historical timestamp because there is not enough data, the API returns an `insufficient data` message for that inference. Live subscriptions can remain active through these per-update insufficient-data messages.
+
 ## Examples
 
 Complete working examples are available in the [examples/](examples/) directory:
