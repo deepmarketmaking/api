@@ -102,7 +102,7 @@ cusip_to_figi, figi_to_cusip = openfigi_map_cusips_to_figis(
 figi = cusip_to_figi["594918BJ2"]
 ```
 
-The API is FIGI-native. The OpenFIGI workflow above maps CUSIP identifiers to FIGIs. For FIGI to CUSIP lookups, prefer Deep MM's public [`bond_data_public.json`](https://public.deepmm.com/bond_data_public.json) mapping when the bond is present there.
+The API is FIGI-native. The OpenFIGI workflow above maps CUSIP/ISIN identifiers to FIGIs.
 
 ### Distribution Fitting
 

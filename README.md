@@ -29,26 +29,9 @@ We don't cover all bonds yet but we are working hard to increase our coverage. Y
 
 Files published from the public Deep MM S3 bucket are available under the `https://public.deepmm.com/` hostname. For example, `s3://deepmm.public/path/to/file.ext` is available as `https://public.deepmm.com/path/to/file.ext`.
 
-### Public identifier/reference files
+The count of bonds in the live universe and in any historical sample/evaluation file may differ. `universe.txt` is the current live API universe, while historical samples can include bonds that were present or inferable for a historical evaluation window but are not necessarily present in today's live universe.
 
-Deep MM also publishes [`bond_data_public.json`](https://public.deepmm.com/bond_data_public.json), which maps public bond identifiers and basic reference attributes for bonds in our reference-data universe. The JSON currently uses compact field names:
-
-| Field | Meaning |
-| --- | --- |
-| `F` | FIGI |
-| `C` | CUSIP |
-| `I` | ISIN |
-| `T` | Display security string |
-| `t` | Ticker |
-| `c` | Coupon |
-| `s` | Issue/start date |
-| `m` | Maturity date |
-| `i` | Issuer |
-| `o` | Amount outstanding |
-
-The count of entries in `bond_data_public.json`, `universe.txt`, and any historical sample/evaluation file may differ. `bond_data_public.json` is a reference/mapping file, `universe.txt` is the current live API universe, and historical samples can include bonds that were present or inferable for a historical evaluation window but are not necessarily present in today's live universe.
-
-The WebSocket API is FIGI-native. If you have CUSIPs or ISINs, you can use OpenFIGI or the public Deep MM mapping file to convert them to FIGIs. The OpenFIGI workflow shown in this repository is CUSIP/ISIN to FIGI; for FIGI to CUSIP/ISIN lookups, prefer `bond_data_public.json` when the bond is present there.
+The WebSocket API is FIGI-native. If you have CUSIPs or ISINs, you can use OpenFIGI to convert them to FIGIs. The OpenFIGI workflow shown in this repository is CUSIP/ISIN to FIGI.
 
 ## Getting Started
 
