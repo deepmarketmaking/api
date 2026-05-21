@@ -7,7 +7,7 @@
 
 ## Introduction
 
-Our (currently US Only) Corporate Credit AI pricing engine is able [to infer](https://www.cloudflare.com/learning/ai/inference-vs-training/#:~:text=In%20the%20field%20of%20artificial,examples%20of%20the%20desired%20result.) the probability distribution of hypothetical trades on the secondary market [conditioned on](https://en.wikipedia.org/wiki/Conditional_probability) properties of the trade knowable before the trade, and also conditioned on a trade occuring at the specified point in time:
+Our (currently US Only) Corporate Credit AI pricing engine is able [to infer](https://www.cloudflare.com/learning/ai/inference-vs-training/#:~:text=In%20the%20field%20of%20artificial,examples%20of%20the%20desired%20result.) the probability distribution of hypothetical trades on the secondary market [conditioned on](https://en.wikipedia.org/wiki/Conditional_probability) properties of the trade knowable before the trade, and also conditioned on a trade occurring at the specified point in time:
 
 - **FIGI**: the bond identifier, with an easy lookup from the CUSIP)
 - **Label**: "price", "spread", or "ytm". What do you want the model to predict? Generally this is price, spread, or yield. See [Price, Spread, and Yield Labels](#price-spread-and-yield-labels) below for important details about how `spread` and `ytm` are produced today.
