@@ -10,7 +10,7 @@
 Our (currently US Only) Corporate Credit AI pricing engine is able [to infer](https://www.cloudflare.com/learning/ai/inference-vs-training/#:~:text=In%20the%20field%20of%20artificial,examples%20of%20the%20desired%20result.) the probability distribution of hypothetical trades on the secondary market [conditioned on](https://en.wikipedia.org/wiki/Conditional_probability) properties of the trade knowable before the trade, and also conditioned on a trade occuring at the specified point in time:
 
 - **FIGI**: the bond identifier, with an easy lookup from the CUSIP)
-- **Label**: "price", "spread", or "ytm". What do you want the model to predict? (Generally price, spread, or yield to maturity (YTM), with plans for adding other labels in the future such as option-adjusted spread). 
+- **Label**: "price", "spread", or "ytm". What do you want the model to predict? Generally this is price, spread, or yield. See [Price, Spread, and Yield Labels](#price-spread-and-yield-labels) below for important details about how `spread` and `ytm` are produced today.
 - **Quantity**: How big of a hypothetical trade is it? Valid values range from 1 to 5,000,000, the later being the maximum reported by the commercial TRACE feed (the academic historical data has the actual sizes, but we're not allowed to use it).
 - **Side**: "bid", "offer", or "dealer", as reported by trace (simplified from the two-field values reported by TRACE).
 - **ATS Indicator**: "Y","N", default "N". This indicates whether you want to assume the trade is happening on an alternative trading service. This field is optional.
@@ -25,9 +25,30 @@ The output of the model currently is the inferred 5th through the 95th percentil
 
 ## Universe
 
-We don't cover all bonds yet but we are working hard to increase our coverage. You can see the list of bonds that we cover [in this file downloadable here](https://public.deepmm.com/universe.txt) (it's updated every night).
+We don't cover all bonds yet but we are working hard to increase our coverage. You can see the list of bonds that we cover [in this file downloadable here](https://public.deepmm.com/universe.txt) (it's updated every night). Use this file as the current live API request universe: if a FIGI is not in this file, you should not assume the live API can infer it today.
 
 Files published from the public Deep MM S3 bucket are available under the `https://public.deepmm.com/` hostname. For example, `s3://deepmm.public/path/to/file.ext` is available as `https://public.deepmm.com/path/to/file.ext`.
+
+### Public identifier/reference files
+
+Deep MM also publishes [`bond_data_public.json`](https://public.deepmm.com/bond_data_public.json), which maps public bond identifiers and basic reference attributes for bonds in our reference-data universe. The JSON currently uses compact field names:
+
+| Field | Meaning |
+| --- | --- |
+| `F` | FIGI |
+| `C` | CUSIP |
+| `I` | ISIN |
+| `T` | Display security string |
+| `t` | Ticker |
+| `c` | Coupon |
+| `s` | Issue/start date |
+| `m` | Maturity date |
+| `i` | Issuer |
+| `o` | Amount outstanding |
+
+The count of entries in `bond_data_public.json`, `universe.txt`, and any historical sample/evaluation file may differ. `bond_data_public.json` is a reference/mapping file, `universe.txt` is the current live API universe, and historical samples can include bonds that were present or inferable for a historical evaluation window but are not necessarily present in today's live universe.
+
+The WebSocket API is FIGI-native. If you have CUSIPs or ISINs, you can use OpenFIGI or the public Deep MM mapping file to convert them to FIGIs. The OpenFIGI workflow shown in this repository is CUSIP/ISIN to FIGI; for FIGI to CUSIP/ISIN lookups, prefer `bond_data_public.json` when the bond is present there.
 
 ## Getting Started
 
@@ -115,6 +136,26 @@ For pre-trade integrations, it is often useful to request enough signal variatio
 You can linearly interpolate between the returned size points to approximate the size of a specific RFQ. If you need the exact configuration of a particular RFQ, you can also make a one-off query for that exact quantity/side/ATS combination rather than maintaining a subscription for every possible combination. One-off queries are generally a better fit for exact ad hoc RFQ pricing and should have lower latency than waiting for a subscription update, because the current production servers are primarily tuned for high-throughput subscription cycling. If your use case needs very low-latency one-off pricing at scale, contact Deep MM so we can discuss server capacity or a server tuned for that scenario.
 
 As your integration scales up, please keep Deep MM informed of any issues that could relate to server load. We can monitor load and add capacity as needed.
+
+### Price, Spread, and Yield Labels
+
+`rfq_label` selects the output label/model you want the API to return:
+
+- `price` returns the model-implied price distribution.
+- `spread` returns the model-implied spread distribution. The spread target is based on TRACE-reported yield minus the assigned benchmark Treasury yield. Where TRACE yield is not present, Deep MM fills in the missing yield with its own YTM calculator before calculating the spread label.
+- `ytm` currently uses the spread/yield pipeline rather than calling the `price` model and converting that price to YTM. In practice, the API returns the modeled spread plus the selected benchmark Treasury yield. Where TRACE-reported yield is present, this yield label is primarily based on TRACE yield; where TRACE yield is not present, Deep MM fills in with its own YTM calculator.
+
+Because `price` and `spread`/`ytm` are separate model outputs, they may not agree exactly after conversion into the same units. If you have your own bond math/yield calculator and want to evaluate a particular conversion convention, you can use the `price` output and convert it yourself for comparison.
+
+Important yield caveat: TRACE-reported yield can reflect yield-to-worst conventions for some securities. For the small subset of covered trades where TRACE yield is missing, the current fallback is a YTM calculator. For callable, fixed-to-float, or otherwise non-plain-vanilla bonds where YTW can differ materially from YTM, that fallback yield and the resulting spread may be less accurate. Deep MM is integrating a fuller YTW calculator to improve these cases and expand coverage.
+
+### Benchmark Treasury Methodology
+
+For spread/yield outputs, Deep MM assigns a benchmark Treasury using an algorithm intended to follow market convention. The spread label is trained as TRACE-reported yield minus the assigned benchmark Treasury yield, with the YTM fallback described above when TRACE yield is missing.
+
+For live and historical inferences, Deep MM uses the latest TP ICAP Treasury yield mid received before the execution/inference timestamp. Spread responses include `treasury_cusip` when a benchmark Treasury is available. If you request both `ytm` and `spread` for the same inference assumptions and timestamp, the approximate benchmark yield used by the API is `ytm - spread`, subject to the caveats above.
+
+Known benchmark issue: when there is a new on-the-run 30Y Treasury, the week of the auction we currently switch to the new one-off-the-run 30Y Treasury as the benchmark for the 30Y tenor. We are working with our data vendor to resolve this issue.
 
 ### Batching
 
@@ -334,6 +375,18 @@ Here's a sample response:
 ```
 
 The attributes of the assumed trade are indicated for each of the inferences. The spread and prices come down as percentiles from the 5th to the 95th percentiles in 5% increments. For spread the treasury benchmark cusip is noted in the response. The date is in the UTC timezone.
+
+Common response fields:
+
+| Field | Meaning |
+| --- | --- |
+| `date` | UTC inference timestamp. For periodic subscription update loops, all subscription inferences generated in the same loop cycle use the same timestamp. |
+| `figi` | Requested FIGI. |
+| `cusip` | Mapped CUSIP when available. |
+| `price`, `spread`, `ytm` | Array of 19 percentile values from the 5th through 95th percentiles in 5% increments. |
+| `tenor` | Benchmark tenor bucket selected by Deep MM when applicable. |
+| `treasury_cusip` | Benchmark Treasury CUSIP used for spread/yield-related inference when available. |
+| `ats_indicator`, `side`, `quantity` | Echoed trade-conditioning variables from the request. |
 
 ## Handling unsupported or unavailable inferences
 
