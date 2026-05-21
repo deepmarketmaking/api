@@ -102,6 +102,8 @@ cusip_to_figi, figi_to_cusip = openfigi_map_cusips_to_figis(
 figi = cusip_to_figi["594918BJ2"]
 ```
 
+The API is FIGI-native. The OpenFIGI workflow above maps CUSIP/ISIN identifiers to FIGIs.
+
 ### Distribution Fitting
 
 ```python
@@ -137,6 +139,16 @@ Recommended standardized quantities are `1_000`, `10_000`, `100_000`, `250_000`,
 For normal subscription requests, the server sends an immediate snapshot/first response for the accepted subscription, followed by later independent updates. Very large batches may be handled differently to protect server load, so send subscriptions in reasonable batches.
 
 Unsupported FIGIs are reported with an `unrecognized figis` message and are filtered out without counting as active subscriptions; valid subscriptions in the same mixed request can still proceed. If a recognized FIGI cannot be inferred for a requested historical timestamp because there is not enough data, the API returns an `insufficient data` message for that inference. Live subscriptions can remain active through these per-update insufficient-data messages.
+
+### Label and yield notes
+
+`rfq_label="price"` returns the model-implied price distribution. `rfq_label="spread"` returns the model-implied spread distribution, where the spread target is based on TRACE-reported yield minus the assigned benchmark Treasury yield. Where TRACE yield is not present, Deep MM fills in the missing yield with its own YTM calculator before calculating the spread label.
+
+`rfq_label="ytm"` currently uses the spread/yield pipeline rather than calling the price model and converting that price to YTM. In practice, it returns the modeled spread plus the selected benchmark Treasury yield. Where TRACE-reported yield is present, this yield label is primarily based on TRACE yield; where TRACE yield is not present, Deep MM fills in with its own YTM calculator.
+
+Because price and spread/yield are separate model outputs, they may not agree exactly after conversion into the same units. TRACE-reported yield can also reflect yield-to-worst conventions for some securities. For callable, fixed-to-float, or otherwise non-plain-vanilla bonds where YTW can differ materially from YTM, the current YTM fallback can be less accurate until Deep MM's fuller YTW calculator is integrated.
+
+For spread/yield outputs, Deep MM assigns a benchmark Treasury using an algorithm intended to follow market convention and uses the latest TP ICAP Treasury yield mid received before the execution/inference timestamp. Spread responses include `treasury_cusip` when available.
 
 ## Examples
 
