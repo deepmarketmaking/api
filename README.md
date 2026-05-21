@@ -141,19 +141,19 @@ As your integration scales up, please keep Deep MM informed of any issues that c
 
 `rfq_label` selects the output label/model you want the API to return:
 
-- `price` returns the model-implied price distribution.
-- `spread` returns the model-implied spread distribution. The spread target is based on TRACE-reported yield minus the assigned benchmark Treasury yield. Where TRACE yield is not present, Deep MM fills in the missing yield with its own YTM calculator before calculating the spread label.
-- `ytm` currently uses the spread/yield pipeline rather than calling the `price` model and converting that price to YTM. In practice, the API returns the modeled spread plus the selected benchmark Treasury yield. Where TRACE-reported yield is present, this yield label is primarily based on TRACE yield; where TRACE yield is not present, Deep MM fills in with its own YTM calculator.
+- `price` returns the model-implied price distribution, quoted as percent of par (for example, `100` = par, `99.5` = 99.5% of par).
+- `spread` returns the model-implied spread distribution, quoted in basis points (`bps`). The spread target is based on TRACE-reported yield minus the assigned benchmark Treasury yield. Where TRACE yield is not present, Deep MM fills in the missing yield with its own YTM calculator before calculating the spread label.
+- `ytm` currently uses the spread/yield pipeline rather than calling the `price` model and converting that price to YTM. `ytm` values are quoted in percent yield units (for example, `5.25` = 5.25%, not `0.0525`). In practice, the API returns the modeled spread plus the selected benchmark Treasury yield, after converting spread from `bps` to percent units. Where TRACE-reported yield is present, this yield label is primarily based on TRACE yield; where TRACE yield is not present, Deep MM fills in with its own YTM calculator.
 
-Because `price` and `spread`/`ytm` are separate model outputs, they may not agree exactly after conversion into the same units. If you have your own bond math/yield calculator and want to evaluate a particular conversion convention, you can use the `price` output and convert it yourself for comparison.
+Because `price` and `spread`/`ytm` are separate model outputs, they may not agree exactly after conversion into comparable units. If you have your own bond math/yield calculator and want to evaluate a particular conversion convention, you can use the `price` output and convert it yourself for comparison.
 
 Important yield caveat: TRACE-reported yield can reflect yield-to-worst conventions for some securities. For the small subset of covered trades where TRACE yield is missing, the current fallback is a YTM calculator. For callable, fixed-to-float, or otherwise non-plain-vanilla bonds where YTW can differ materially from YTM, that fallback yield and the resulting spread may be less accurate. Deep MM is integrating a fuller YTW calculator to improve these cases and expand coverage.
 
 ### Benchmark Treasury Methodology
 
-For spread/yield outputs, Deep MM assigns a benchmark Treasury using an algorithm intended to follow market convention. The spread label is trained as TRACE-reported yield minus the assigned benchmark Treasury yield, with the YTM fallback described above when TRACE yield is missing.
+For spread/yield outputs, Deep MM assigns a benchmark Treasury using an algorithm intended to follow market convention. The spread label is trained as TRACE-reported yield minus the assigned benchmark Treasury yield, with both yields expressed in percent units before the difference is converted to basis points for the `spread` output. The YTM fallback described above is used when TRACE yield is missing.
 
-For live and historical inferences, Deep MM uses the latest TP ICAP Treasury yield mid received before the execution/inference timestamp. Spread responses include `treasury_cusip` when a benchmark Treasury is available. If you request both `ytm` and `spread` for the same inference assumptions and timestamp, the approximate benchmark yield used by the API is `ytm - spread`, subject to the caveats above.
+For live and historical inferences, Deep MM uses the latest TP ICAP Treasury yield mid received before the execution/inference timestamp. Spread responses include `treasury_cusip` when a benchmark Treasury is available. If you request both `ytm` and `spread` for the same inference assumptions and timestamp, the approximate benchmark yield used by the API is `ytm - (spread / 100)`, where `ytm` is in percent and `spread` is in basis points, subject to the caveats above.
 
 Known benchmark issue: when there is a new on-the-run 30Y Treasury, the week of the auction we currently switch to the new one-off-the-run 30Y Treasury as the benchmark for the 30Y tenor. We are working with our data vendor to resolve this issue.
 
