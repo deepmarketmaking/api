@@ -3,6 +3,11 @@ httpx
 matplotlib
 numpy
 pyarrow
+aiofiles
 scipy
 tenacity
 websockets
+ijson
+ujson
+aiofiles
+pandas
