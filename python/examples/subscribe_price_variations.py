@@ -118,8 +118,10 @@ async def main():
 
     # Define variations
 
-    # All sides:
+    # Sides with independently selectable ATS indicators:
     # sides = ['bid', 'offer', 'dealer']
+    # The 'ats' side is also supported, but always uses ats_indicator='Y'.
+    # If adding it below, use only one indicator for 'ats' to avoid duplicates.
     # Sides we need: 
     sides = ['bid', 'offer']
     ats_indicators = ['Y', 'N']

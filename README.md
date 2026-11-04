@@ -12,8 +12,8 @@ Our (currently US Only) Corporate Credit AI pricing engine is able [to infer](ht
 - **FIGI**: the bond identifier, with an easy lookup from the CUSIP)
 - **Label**: "price", "spread", or "ytm". What do you want the model to predict? Generally this is price, spread, or yield. See [Price, Spread, and Yield Labels](#price-spread-and-yield-labels) below for important details about how `spread` and `ytm` are produced today.
 - **Quantity**: How big of a hypothetical trade is it? Valid values range from 1 to 5,000,000, the latter being the maximum reported by the commercial TRACE feed (the academic historical data has the actual sizes, but we're not allowed to use it).
-- **Side**: "bid", "offer", or "dealer", as reported by trace (simplified from the two-field values reported by TRACE).
-- **ATS Indicator**: "Y","N", default "N". This indicates whether you want to assume the trade is happening on an alternative trading service. This field is optional.
+- **Side**: "bid", "offer", "dealer", or "ats". These select the trade scenario, simplified from TRACE fields. The "ats" side selects the canonical ATS scenario; see [Side and ATS indicator](#side-and-ats-indicator).
+- **ATS Indicator** (`ats_indicator`): "Y" or "N". This optional field indicates whether to assume the trade happens on an alternative trading system (ATS). It defaults to "N" for "bid", "offer", and "dealer". For "ats", the server always uses "Y", even if the field is omitted or explicitly set to "N".
 - **Timestamp**: List of strings in the [ISO 8601](https://en.wikipedia.org/wiki/ISO_8601) UTC timestamp format (example '2023-11-01T15:10:07.661Z' -- the Z indicates that it is UTC. This timestamp example expresses November 1st, 2023 at 10:07.661 AM US/Eastern), for which you want to get historical price, spread, or ytm probability distributions. Any timestamp greater than January 1st, 2019 is valid (as that is how far back we have historical data inputs for our AI model). This field is optional. Typically if you only want the current inference values, then you would not include this field.
 
 You can also specify whether you want to subscribe to the inference. If you subscribe then you will receive updates at regular intervals while you maintain the websocket connection. 
@@ -119,6 +119,46 @@ For pre-trade integrations, it is often useful to request enough signal variatio
 You can linearly interpolate between the returned size points to approximate the size of a specific RFQ. If you need the exact configuration of a particular RFQ, you can also make a one-off query for that exact quantity/side/ATS combination rather than maintaining a subscription for every possible combination. One-off queries are generally a better fit for exact ad hoc RFQ pricing and should have lower latency than waiting for a subscription update, because the current production servers are primarily tuned for high-throughput subscription cycling. If your use case needs very low-latency one-off pricing at scale, contact Deep MM so we can discuss server capacity or a server tuned for that scenario.
 
 As your integration scales up, please keep Deep MM informed of any issues that could relate to server load. We can monitor load and add capacity as needed.
+
+### Side and ATS indicator
+
+Valid `side` values are `"bid"`, `"offer"`, `"dealer"`, and `"ats"`.
+
+- `bid` and `offer` retain their customer-trade meanings (dealer buying and selling, respectively); `dealer` retains its interdealer meaning. Their `ats_indicator` remains independent: `"Y"` and `"N"` are supported, with `"N"` used when omitted. In particular, customer `bid`/`offer` requests with `ats_indicator="Y"` remain customer scenarios, not `side="ats"`.
+- `ats` selects the canonical ATS scenario: internally, `counterparty="T"`, `buy_sell="S"`, and `ats_indicator="Y"`. Clients send `side="ats"`, not the internal `counterparty` or `buy_sell` fields.
+- For `side="ats"`, an omitted `ats_indicator`, explicit `"N"`, and explicit `"Y"` all resolve to the same effective ATS scenario. The server overrides `"N"` to `"Y"`; it does not reject that combination. Do not request both indicator values expecting distinct ATS scenarios.
+- Responses describe the **effective** trade scenario: an ATS request returns `side="ats"` and `ats_indicator="Y"`, not a literal echo of an omitted or overridden indicator. Use these effective values when matching responses to requests.
+
+These rules apply to live subscriptions, one-off requests, and historical timestamp requests. For example, this subscription omits the indicator because the ATS side implies `"Y"`:
+
+```json
+{
+  "inference": [{
+    "rfq_label": "spread",
+    "figi": "BBG003LZRTD5",
+    "quantity": 1000000,
+    "side": "ats",
+    "subscribe": true
+  }]
+}
+```
+
+For a one-off request, set `"subscribe": false` and supply an explicit `timestamp` list: use the desired current UTC instant for a current snapshot, or a past instant such as `"timestamp": ["2023-11-01T15:10:07.661Z"]` for historical pricing. Without a timestamp, a non-subscription request does not produce an inference. The response's scenario fields are `"side": "ats"` and `"ats_indicator": "Y"` in each case, including if you explicitly add `"ats_indicator": "N"` to the request.
+
+The Python SDK and Node.js examples serialize dictionaries/objects directly; there is no client-side side enum or request schema to update. In an authenticated Node.js connection, for example:
+
+```javascript
+ws.send(JSON.stringify({
+    inference: [{
+        rfq_label: 'spread',
+        figi: 'BBG003LZRTD5',
+        quantity: 1000000,
+        side: 'ats',
+        ats_indicator: 'N', // Accepted; the server uses and returns 'Y'.
+        subscribe: true,
+    }],
+}));
+```
 
 ### Price, Spread, and Yield Labels
 
@@ -369,7 +409,7 @@ Common response fields:
 | `price`, `spread`, `ytm` | Array of 19 percentile values from the 5th through 95th percentiles in 5% increments. |
 | `tenor` | Benchmark tenor bucket selected by Deep MM when applicable. |
 | `treasury_cusip` | Benchmark Treasury CUSIP used for spread/yield-related inference when available. |
-| `ats_indicator`, `side`, `quantity` | Echoed trade-conditioning variables from the request. |
+| `ats_indicator`, `side`, `quantity` | Effective trade-conditioning variables. For `side="ats"`, `ats_indicator` is always `"Y"`, even when omitted or supplied as `"N"` in the request. |
 
 ## Handling unsupported or unavailable inferences
 
