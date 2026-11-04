@@ -140,6 +140,28 @@ For normal subscription requests, the server sends an immediate snapshot/first r
 
 Unsupported FIGIs are reported with an `unrecognized figis` message and are filtered out without counting as active subscriptions; valid subscriptions in the same mixed request can still proceed. If a recognized FIGI cannot be inferred for a requested historical timestamp because there is not enough data, the API returns an `insufficient data` message for that inference. Live subscriptions can remain active through these per-update insufficient-data messages.
 
+### Side and ATS indicator
+
+The SDK sends ordinary dictionaries as JSON; no client-side side enum or request schema restricts the values. Supported sides are `"bid"`, `"offer"`, `"dealer"`, and `"ats"`.
+
+`side="ats"` selects the canonical ATS scenario (internally `counterparty="T"`, `buy_sell="S"`, `ats_indicator="Y"`). The server uses `ats_indicator="Y"` whether the request omits the indicator or explicitly supplies `"N"` or `"Y"`; explicit `"N"` is overridden, not rejected. Responses report the effective `side="ats"`, `ats_indicator="Y"` scenario. For example, on an authenticated connection:
+
+```python
+await ws.send(json.dumps({
+    'inference': [{
+        'rfq_label': 'spread',
+        'figi': 'BBG003LZRTD5',
+        'quantity': 1_000_000,
+        'side': 'ats',
+        'subscribe': True,
+    }],
+}))
+```
+
+For one-off pricing, use `'subscribe': False` and supply an explicit `timestamp` list: use the desired current UTC instant for a current snapshot, or a past instant such as `['2023-11-01T15:10:07.661Z']` for historical pricing. Without a timestamp, a non-subscription request does not produce an inference. All three modes use the same ATS normalization.
+
+Existing `bid`, `offer`, and `dealer` behavior is unchanged: their indicator defaults to `"N"` and can be set to `"Y"`. Customer `bid`/`offer` requests with `ats_indicator="Y"` remain customer scenarios, not `side="ats"`. When generating variations, request the ATS side only once per quantity/label/timestamp: its `"N"` and `"Y"` inputs resolve to the same scenario. See the [full side/ATS contract](../README.md#side-and-ats-indicator).
+
 ### Label and yield notes
 
 `rfq_label="price"` returns the model-implied price distribution. `rfq_label="spread"` returns the model-implied spread distribution, where the spread target is based on TRACE-reported yield minus the assigned benchmark Treasury yield. Where TRACE yield is not present, Deep MM fills in the missing yield with its own YTM calculator before calculating the spread label.
